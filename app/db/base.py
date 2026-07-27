@@ -11,6 +11,14 @@ _engine = None
 _AsyncSessionLocal = None
 
 
+def _get_async_url():
+    """Railway даёт postgresql://, но async engine требует postgresql+asyncpg://."""
+    url = settings.DATABASE_URL
+    if url.startswith("postgresql://") and not url.startswith("postgresql+asyncpg://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
 def _get_engine():
     global _engine
     if _engine is None:
@@ -21,7 +29,7 @@ def _get_engine():
         if "postgresql" in settings.DATABASE_URL:
             kwargs["pool_size"] = settings.DB_POOL_SIZE
             kwargs["max_overflow"] = settings.DB_MAX_OVERFLOW
-        _engine = create_async_engine(settings.DATABASE_URL, **kwargs)
+        _engine = create_async_engine(_get_async_url(), **kwargs)
     return _engine
 
 
