@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bestconsulting-ai-core"
-version = "2.1.0"
+version = "2.1.1"
 description = "Единый ИИ-сотрудник Bestconsulting с оркестрацией и памятью"
 readme = "README.md"
 requires-python = ">=3.11"
