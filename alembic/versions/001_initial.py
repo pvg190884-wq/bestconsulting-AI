@@ -1,4 +1,4 @@
-"""Initial migration — clients, chat_sessions, chat_messages, knowledge_items.
+"""Initial migration.
 
 Revision ID: 001
 Revises:
@@ -17,7 +17,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # clients
     op.create_table(
         "clients",
         sa.Column("id", sa.String(36), primary_key=True),
@@ -32,7 +31,6 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
     )
 
-    # chat_sessions
     op.create_table(
         "chat_sessions",
         sa.Column("id", sa.String(36), primary_key=True),
@@ -44,7 +42,6 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
     )
 
-    # chat_messages
     op.create_table(
         "chat_messages",
         sa.Column("id", sa.String(36), primary_key=True),
@@ -58,7 +55,6 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 
-    # knowledge_items
     op.create_table(
         "knowledge_items",
         sa.Column("id", sa.String(36), primary_key=True),

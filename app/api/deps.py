@@ -9,9 +9,11 @@ def get_settings():
 
 
 async def get_db() -> AsyncSession:
-    """Dependency для получения сессии БД."""
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except Exception:
+            await session.rollback()
+            raise
         finally:
             await session.close()

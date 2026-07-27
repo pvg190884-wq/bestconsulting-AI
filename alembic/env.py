@@ -10,8 +10,9 @@ from alembic import context
 from app.config import settings
 from app.db.base import Base
 
-# Импортируем все модели, чтобы Alembic видел их
-from app.db.models import client, chat, knowledge
+import app.db.models.client
+import app.db.models.chat
+import app.db.models.knowledge
 
 config = context.config
 
@@ -22,7 +23,10 @@ target_metadata = Base.metadata
 
 
 def get_url():
-    return settings.DATABASE_URL
+    url = settings.DATABASE_URL
+    if url.startswith("postgresql://") and not url.startswith("postgresql+asyncpg://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
 
 
 def run_migrations_offline() -> None:

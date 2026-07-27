@@ -1,6 +1,4 @@
-"""SQLAlchemy модель: База знаний.
-Поле embedding — заготовка для pgvector (v2.3).
-"""
+"""SQLAlchemy модель: База знаний (заготовка под pgvector v2.3)."""
 from sqlalchemy import Column, String, DateTime, Text, Float, Boolean, JSON, Enum as SAEnum, Index
 from sqlalchemy.sql import func
 import enum
@@ -22,16 +20,14 @@ class KnowledgeItem(Base):
     title = Column(String(500), nullable=False)
     content = Column(Text, nullable=False)
     tags = Column(JSON, default=list)
-    source = Column(String(255), nullable=False)  # откуда добавлено
+    source = Column(String(255), nullable=False)
     confidence = Column(Float, default=1.0)
     verified = Column(Boolean, default=False)
-    # Заготовка для pgvector — при миграции на PostgreSQL заменим на Vector(1536)
-    embedding = Column(JSON, nullable=True)
+    embedding = Column(JSON, nullable=True)  # Заготовка под pgvector
     metadata = Column(JSON, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # Индекс для быстрого поиска по типу и verified
     __table_args__ = (
         Index("ix_knowledge_type_verified", "type", "verified"),
     )

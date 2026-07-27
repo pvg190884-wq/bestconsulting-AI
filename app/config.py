@@ -10,29 +10,29 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # === Основные ===
     APP_ENV: str = Field(default="development")
     LOG_LEVEL: str = Field(default="INFO")
     SECRET_KEY: str = Field(default="change-me-in-production")
     WEBHOOK_SECRET: str = Field(default="change-me-in-production")
     AGENT_NAME: str = Field(default="Высокотехнологичный сотрудник Bestconsulting")
 
-    # === LLM ===
-    KIMI_API_KEY: str = Field(default="")
-    KIMI_BASE_URL: str = Field(default="https://api.moonshot.ai/v1")
-    KIMI_MODEL: str = Field(default="kimi-k2.6")
-
+    # === LLM Провайдеры ===
+    # OpenAI — основной оркестратор
     OPENAI_API_KEY: str = Field(default="")
     OPENAI_BASE_URL: str = Field(default="https://api.openai.com/v1")
     OPENAI_MODEL: str = Field(default="gpt-5.5")
+    OPENAI_EMBEDDING_MODEL: str = Field(default="text-embedding-3-large")
 
+    # DeepSeek — аналитика, логика (резерв)
     DEEPSEEK_API_KEY: str = Field(default="")
     DEEPSEEK_BASE_URL: str = Field(default="https://api.deepseek.com/v1")
     DEEPSEEK_MODEL: str = Field(default="deepseek-chat")
 
+    # Anthropic Claude — длинные документы (резерв)
     ANTHROPIC_API_KEY: str = Field(default="")
     ANTHROPIC_MODEL: str = Field(default="claude-sonnet-4-20250514")
 
+    # Qwen — программирование (резерв)
     QWEN_API_KEY: str = Field(default="")
     QWEN_BASE_URL: str = Field(default="https://dashscope.aliyuncs.com/compatible-mode/v1")
     QWEN_MODEL: str = Field(default="qwen-coder-plus-latest")
@@ -73,10 +73,6 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.APP_ENV == "development"
-
-    @property
-    def is_async_db(self) -> bool:
-        return self.DATABASE_URL.startswith("postgresql+asyncpg") or self.DATABASE_URL.startswith("sqlite+aiosqlite")
 
 
 settings = Settings()

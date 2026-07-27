@@ -55,5 +55,5 @@ uploads/*
 .DS_Store
 Thumbs.db
 
-# Railway / Heroku
+# Railway
 .railway/

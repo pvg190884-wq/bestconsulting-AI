@@ -15,15 +15,15 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "2.1.0",
+        "version": "2.2.0",
         "agent": settings.AGENT_NAME,
         "environment": settings.APP_ENV,
+        "orchestrator": "GPT",
     }
 
 
 @router.get("/ready")
 async def readiness_check(db: AsyncSession = Depends(get_db)):
-    """Проверка готовности — включая подключение к БД."""
     db_status = "connected"
     try:
         await db.execute(text("SELECT 1"))
@@ -35,7 +35,7 @@ async def readiness_check(db: AsyncSession = Depends(get_db)):
         "timestamp": datetime.utcnow().isoformat(),
         "checks": {
             "database": db_status,
-            "llm_orchestrator": "pending",
+            "llm_orchestrator": "active",
             "cache": "pending",
         },
     }

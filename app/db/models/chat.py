@@ -16,7 +16,7 @@ class ChatSession(Base):
     id = Column(String(36), primary_key=True)
     client_id = Column(String(36), ForeignKey("clients.id"), nullable=False, index=True)
     channel = Column(String(50), nullable=False, default="web")
-    status = Column(String(50), default="active")  # active, closed, archived
+    status = Column(String(50), default="active")
     metadata = Column(JSON, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

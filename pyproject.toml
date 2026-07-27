@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bestconsulting-ai-core"
-version = "2.1.0"
-description = "Единый ИИ-сотрудник Bestconsulting с оркестрацией и памятью"
+version = "2.2.0"
+description = "Единый ИИ-сотрудник Bestconsulting с GPT-оркестрацией и памятью"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Proprietary"}

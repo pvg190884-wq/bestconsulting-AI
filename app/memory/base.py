@@ -1,4 +1,7 @@
-"""Memory Base — заготовка."""
+"""Memory Base — абстракция долговременной памяти.
+
+Заготовка для v2.3 (RAG + pgvector).
+"""
 from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel

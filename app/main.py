@@ -1,5 +1,5 @@
-"""BestConsulting AI Core v2.1 — Database Layer
-Единый ИИ-сотрудник компании Bestconsulting.
+"""BestConsulting AI Core v2.2 — GPT Orchestrator
+Единый ИИ-сотрудник. GPT-5.5 — основной мозг.
 """
 import time
 from contextlib import asynccontextmanager
@@ -19,14 +19,15 @@ logger = setup_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Управление жизненным циклом приложения."""
-    logger.info("🚀 BestConsulting AI Core v2.1 запущен")
+    logger.info("🚀 BestConsulting AI Core v2.2 запущен")
     logger.info(f"Окружение: {settings.APP_ENV}")
-    logger.info(f"Модель оркестратора: {settings.KIMI_MODEL}")
+    logger.info(f"Оркестратор: {settings.OPENAI_MODEL}")
 
-    # Инициализация БД
-    await init_db()
-    logger.info("✅ База данных инициализирована")
+    try:
+        await init_db()
+        logger.info("✅ База данных инициализирована")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации БД: {e}")
 
     yield
     logger.info("🛑 BestConsulting AI Core остановлен")
@@ -34,8 +35,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="BestConsulting AI Core",
-    description="Единый ИИ-сотрудник с оркестрацией, памятью и самообучением.",
-    version="2.1.0",
+    description="Единый ИИ-сотрудник с GPT-оркестрацией, памятью и самообучением.",
+    version="2.2.0",
     lifespan=lifespan,
     docs_url="/docs" if settings.APP_ENV != "production" else None,
     redoc_url="/redoc" if settings.APP_ENV != "production" else None,
@@ -84,7 +85,8 @@ app.include_router(api_router, prefix="/api/v1")
 async def root():
     return {
         "name": "BestConsulting AI Core",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "status": "running",
         "agent": settings.AGENT_NAME,
+        "orchestrator": "GPT",
     }

@@ -1,5 +1,5 @@
 """SQLAlchemy модель: Клиенты."""
-from sqlalchemy import Column, String, DateTime, JSON, Integer
+from sqlalchemy import Column, String, DateTime, JSON
 from sqlalchemy.sql import func
 from app.db.base import Base
 
@@ -11,7 +11,7 @@ class Client(Base):
     name = Column(String(255), nullable=True)
     email = Column(String(255), nullable=True)
     phone = Column(String(50), nullable=True)
-    channel = Column(String(50), nullable=False, default="web")  # telegram, max, email, web
+    channel = Column(String(50), nullable=False, default="web")
     preferences = Column(JSON, default=dict)
     metadata = Column(JSON, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
