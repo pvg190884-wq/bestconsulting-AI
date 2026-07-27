@@ -11,7 +11,9 @@ from app.config import settings
 from app.db.base import Base
 
 # Импортируем все модели, чтобы Alembic видел их
-from app.db.models import client, chat, knowledge
+import app.db.models.client
+import app.db.models.chat
+import app.db.models.knowledge
 
 config = context.config
 
