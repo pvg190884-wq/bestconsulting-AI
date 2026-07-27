@@ -24,8 +24,11 @@ async def lifespan(app: FastAPI):
     logger.info(f"Окружение: {settings.APP_ENV}")
     logger.info(f"Модель оркестратора: {settings.KIMI_MODEL}")
     
-    await init_db()
-    logger.info("✅ База данных инициализирована")
+    try:
+        await init_db()
+        logger.info("✅ База данных инициализирована")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации БД: {e}")
     
     yield
     logger.info("🛑 BestConsulting AI Core остановлен")
