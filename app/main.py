@@ -19,7 +19,7 @@ logger = setup_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 BestConsulting AI Core v2.2 запущен")
+    logger.info("🚀 CANARY-0001 v2.2 запущен")
     logger.info(f"Окружение: {settings.APP_ENV}")
     logger.info(f"Оркестратор: {settings.OPENAI_MODEL}")
 
