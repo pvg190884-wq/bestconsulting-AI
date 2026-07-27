@@ -53,4 +53,4 @@ FastAPI (Railway)
 
 ## Лицензия
 
-Proprietary — Bestconsulting
+Proprietary — Bestconsulting.
