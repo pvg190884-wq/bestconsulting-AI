@@ -15,7 +15,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "2.1.0",
+        "version": "2.1.1",
         "agent": settings.AGENT_NAME,
         "environment": settings.APP_ENV,
     }
