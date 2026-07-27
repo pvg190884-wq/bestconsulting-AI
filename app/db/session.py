@@ -1,17 +1,15 @@
-"""Зависимости API."""
-from app.config import settings
-from app.db.session import AsyncSessionLocal
+"""Сессия БД для FastAPI dependencies."""
+from app.db.base import AsyncSessionLocal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def get_settings():
-    return settings
-
-
 async def get_db() -> AsyncSession:
-    """Dependency для получения сессии БД."""
+    """Yield async DB session."""
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except Exception:
+            await session.rollback()
+            raise
         finally:
             await session.close()

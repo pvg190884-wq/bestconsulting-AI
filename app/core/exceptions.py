@@ -1,30 +1,21 @@
-"""Кастомные исключения BestConsulting AI Core."""
-
+"""Кастомные исключения."""
 
 class BestConsultingException(Exception):
-    """Базовое исключение платформы."""
-
     def __init__(self, message: str, status_code: int = 400, code: str = "ERROR"):
         self.message = message
         self.status_code = status_code
         self.code = code
         super().__init__(self.message)
 
-
 class LLMUnavailableException(BestConsultingException):
-    """LLM провайдер недоступен."""
-
     def __init__(self, provider: str):
         super().__init__(
-            message=f"Провайдер {provider} временно недоступен. Пробуем резервный...",
+            message=f"Провайдер {provider} временно недоступен.",
             status_code=503,
             code="LLM_UNAVAILABLE",
         )
 
-
 class ChannelException(BestConsultingException):
-    """Ошибка канала коммуникации."""
-
     def __init__(self, channel: str, detail: str):
         super().__init__(
             message=f"Ошибка канала {channel}: {detail}",
@@ -32,10 +23,7 @@ class ChannelException(BestConsultingException):
             code="CHANNEL_ERROR",
         )
 
-
 class KnowledgeBaseException(BestConsultingException):
-    """Ошибка базы знаний."""
-
     def __init__(self, detail: str):
         super().__init__(
             message=f"Ошибка базы знаний: {detail}",

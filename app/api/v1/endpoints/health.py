@@ -1,34 +1,40 @@
-"""Health check endpoints."""
+"""Health check с проверкой БД."""
 from fastapi import APIRouter, Depends
 from datetime import datetime
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.config import settings
-from app.api.deps import get_settings
+from app.api.deps import get_db
 
 router = APIRouter()
 
 
 @router.get("/")
 async def health_check():
-    """Проверка работоспособности сервиса."""
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "2.0.0",
+        "version": "2.1.0",
         "agent": settings.AGENT_NAME,
         "environment": settings.APP_ENV,
     }
 
 
 @router.get("/ready")
-async def readiness_check():
-    """Проверка готовности к приему трафика."""
-    # TODO: проверка подключения к БД, Redis и т.д.
+async def readiness_check(db: AsyncSession = Depends(get_db)):
+    """Проверка готовности — включая подключение к БД."""
+    db_status = "connected"
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception:
+        db_status = "disconnected"
+
     return {
-        "status": "ready",
+        "status": "ready" if db_status == "connected" else "not_ready",
         "timestamp": datetime.utcnow().isoformat(),
         "checks": {
-            "database": "pending",
+            "database": db_status,
             "llm_orchestrator": "pending",
             "cache": "pending",
         },

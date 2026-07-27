@@ -1,6 +1,5 @@
-"""BestConsulting AI Core v2.0 — Foundation
+"""BestConsulting AI Core v2.1 — Database Layer
 Единый ИИ-сотрудник компании Bestconsulting.
-Оркестратор, маршрутизатор, память, самообучение.
 """
 import time
 from contextlib import asynccontextmanager
@@ -13,17 +12,22 @@ from app.config import settings
 from app.utils.logger import setup_logging
 from app.core.exceptions import BestConsultingException
 from app.api.v1.router import api_router
+from app.db.base import init_db
 
-# Настройка логирования
 logger = setup_logging()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения."""
-    logger.info("🚀 BestConsulting AI Core v2.0 запущен")
+    logger.info("🚀 BestConsulting AI Core v2.1 запущен")
     logger.info(f"Окружение: {settings.APP_ENV}")
     logger.info(f"Модель оркестратора: {settings.KIMI_MODEL}")
+
+    # Инициализация БД
+    await init_db()
+    logger.info("✅ База данных инициализирована")
+
     yield
     logger.info("🛑 BestConsulting AI Core остановлен")
 
@@ -31,13 +35,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="BestConsulting AI Core",
     description="Единый ИИ-сотрудник с оркестрацией, памятью и самообучением.",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
     docs_url="/docs" if settings.APP_ENV != "production" else None,
     redoc_url="/redoc" if settings.APP_ENV != "production" else None,
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,7 +52,6 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
-    """Добавляет время обработки запроса."""
     start_time = time.time()
     response = await call_next(request)
     process_time = time.time() - start_time
@@ -59,7 +61,6 @@ async def add_process_time_header(request: Request, call_next):
 
 @app.exception_handler(BestConsultingException)
 async def bestconsulting_exception_handler(request: Request, exc: BestConsultingException):
-    """Обработка кастомных исключений."""
     logger.error(f"BestConsultingException: {exc.message}")
     return JSONResponse(
         status_code=exc.status_code,
@@ -69,7 +70,6 @@ async def bestconsulting_exception_handler(request: Request, exc: BestConsulting
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Глобальная обработка непредвиденных ошибок."""
     logger.exception(f"Необработанное исключение: {exc}")
     return JSONResponse(
         status_code=500,
@@ -77,16 +77,14 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Подключение API роутеров
 app.include_router(api_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["root"])
 async def root():
-    """Корневой endpoint."""
     return {
         "name": "BestConsulting AI Core",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "running",
         "agent": settings.AGENT_NAME,
     }

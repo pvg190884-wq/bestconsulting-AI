@@ -1,50 +1,60 @@
-# BestConsulting AI Core — Архитектура v2.0
-
-## Концепция
-Единый ИИ-сотрудник компании Bestconsulting. Оркестратор, который сам решает — ответить сам или привлечь специализированные модели. Пользователь всегда общается только с единым агентом, не замечая сложной инфраструктуры.
-
-## Компоненты
-
-### 1. API Layer (`app/api/`)
-FastAPI роутеры. Версионирование API (v1, v2...). Endpoints: health, chat, admin, upload.
-
-### 2. Orchestrator (`app/orchestrator/`)
-AI Router — определяет тип задачи и выбирает LLM. Fallback-цепочка при сбоях.
-
-### 3. Services (`app/services/`)
-- `llm_service.py` — унифицированный интерфейс к LLM
-- `embedding_service.py` — векторизация текста
-
-### 4. Memory (`app/memory/`)
-Долговременная память на PostgreSQL + pgvector:
-- Глобальная (компания)
-- Проектная
-- Клиентская
-- Диалоговая
-
-### 5. Cache (`app/cache/`)
-Redis / in-memory кэш. Семантический кэш для снижения затрат.
-
-### 6. Models (`app/models/`)
-Pydantic модели для валидации данных.
-
-### 7. Prompts (`app/prompts/`)
-Системные промпты, хранящиеся в файлах (не в коде). Меняются без деплоя.
-
-### 8. Utils (`app/utils/`)
-Логирование, безопасность, хелперы.
+# BestConsulting AI Core — Архитектура v2.1
 
 ## Дорожная карта
 
 | Версия | Фокус | Статус |
 |--------|-------|--------|
-| v2.0 Foundation | FastAPI, структура, health | 🚧 |
-| v2.1 Database | PostgreSQL, Alembic, модели | ⬜ |
+| v2.0 Foundation | FastAPI, структура, health | ✅ |
+| v2.1 Database | PostgreSQL, Alembic, модели | ✅ |
 | v2.2 AI | OpenAI Responses API, оркестратор | ⬜ |
 | v2.3 Memory | pgvector, RAG, история | ⬜ |
 | v2.4 Knowledge | База знаний, самообучение | ⬜ |
 | v2.5 Channels | Telegram, MAX, Email, Web | ⬜ |
 | v3.0 Enterprise | Мониторинг, очереди, админка | ⬜ |
+
+## Схема БД v2.1
+
+```
+clients
+├── id (PK)
+├── external_id (уникальный, индекс)
+├── name, email, phone
+├── channel (telegram/max/email/web)
+├── preferences (JSON)
+└── created_at, updated_at
+
+chat_sessions
+├── id (PK)
+├── client_id (FK → clients)
+├── channel
+├── status (active/closed/archived)
+├── metadata (JSON)
+└── created_at, updated_at
+
+chat_messages
+├── id (PK)
+├── session_id (FK → chat_sessions)
+├── role (user/assistant/system)
+├── content
+├── model_used
+├── tokens_used
+├── latency_ms
+├── metadata (JSON)
+└── created_at
+
+knowledge_items
+├── id (PK)
+├── type (document/faq/scenario/instruction/client_preference/learned)
+├── title
+├── content
+├── tags (JSON)
+├── source
+├── confidence
+├── verified
+├── embedding (JSON, заготовка под pgvector)
+├── metadata (JSON)
+└── created_at, updated_at
+```
 
 ## Модельная независимость
 ```
@@ -66,7 +76,7 @@ Aggregator — единый стиль
 Ответ клиенту
 ```
 
-## Память и самообучение
+## Память и самообучение (v2.3–v2.4)
 ```
 Диалог клиента
     │

@@ -1,4 +1,4 @@
-# BestConsulting AI Core v2.0
+# BestConsulting AI Core v2.1
 
 > Единый ИИ-сотрудник компании Bestconsulting. Оркестратор, память, самообучение, мультиканальность.
 
@@ -6,34 +6,34 @@
 
 | Компонент | Статус |
 |-----------|--------|
-| FastAPI Foundation | 🚧 v2.0 |
-| PostgreSQL + pgvector | ⬜ v2.1 |
+| FastAPI Foundation | ✅ v2.0 |
+| PostgreSQL + Alembic | ✅ v2.1 |
 | AI Orchestrator | ⬜ v2.2 |
-| Memory & RAG | ⬜ v2.3 |
+| Memory & RAG (pgvector) | ⬜ v2.3 |
 | Knowledge Base | ⬜ v2.4 |
 | Channels (TG, MAX, Email) | ⬜ v2.5 |
-| Enterprise (мониторинг, админка) | ⬜ v3.0 |
+| Enterprise | ⬜ v3.0 |
 
 ## Быстрый старт
 
 ```bash
-# 1. Клонировать репозиторий
+# 1. Клонировать
 git clone <repo-url>
 cd bestconsulting-ai-core
 
-# 2. Создать виртуальное окружение
+# 2. Окружение
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# или: venv\Scripts\activate  # Windows
-
-# 3. Установить зависимости
+source venv/bin/activate  # или venv\Scripts\activate
 pip install -r requirements.txt
 
-# 4. Создать .env из примера
+# 3. .env
 cp .env.example .env
-# Отредактируй .env, добавь свои API-ключи
+# Отредактируй .env, добавь API-ключи
 
-# 5. Запустить
+# 4. Миграции БД (для PostgreSQL)
+alembic upgrade head
+
+# 5. Запуск
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -41,17 +41,20 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 - `GET /` — информация о сервисе
 - `GET /api/v1/health/` — health check
-- `GET /api/v1/health/ready` — readiness probe
-- `POST /api/v1/chat/` — диалог с агентом (заглушка в v2.0)
+- `GET /api/v1/health/ready` — readiness (с проверкой БД)
+- `POST /api/v1/chat/` — диалог с агентом
 
-## Архитектура
+## База данных
 
-См. [docs/architecture.md](docs/architecture.md)
+v2.1 добавляет 4 таблицы:
+- `clients` — клиенты (Telegram ID, MAX ID, email)
+- `chat_sessions` — сессии диалогов
+- `chat_messages` — сообщения с метаданными (модель, токены, latency)
+- `knowledge_items` — база знаний (заготовка под pgvector)
 
 ## Переменные окружения
 
-Все секреты хранятся в `.env` (не загружается в Git).
-См. `.env.example` для полного списка.
+Все секреты в `.env` (не в Git). См. `.env.example`.
 
 ## Лицензия
 

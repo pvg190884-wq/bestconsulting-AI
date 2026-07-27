@@ -1,6 +1,8 @@
-"""Chat API endpoints — заготовка для v2.2 AI."""
-from fastapi import APIRouter, HTTPException
+"""Chat API — заготовка."""
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.api.deps import get_db
 
 router = APIRouter()
 
@@ -8,7 +10,7 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     message: str
     user_id: str
-    channel: str = "web"  # web, telegram, max, email
+    channel: str = "web"
     session_id: str | None = None
 
 
@@ -20,14 +22,9 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """Основной endpoint диалога с агентом.
-
-    В Foundation v2.0 возвращает заглушку.
-    Полная реализация — в v2.2 AI Integration.
-    """
+async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     return ChatResponse(
-        response=f"Привет! Я {request.user_id}, пока в режиме Foundation. Полная версия скоро.",
+        response=f"Привет! Я {request.user_id}, пока в режиме v2.1 Database. Полная версия скоро.",
         model_used="foundation-stub",
         processing_time=0.0,
         session_id=request.session_id or "new-session",
