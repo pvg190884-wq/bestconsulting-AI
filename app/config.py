@@ -16,26 +16,15 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET: str = Field(default="change-me-in-production")
     AGENT_NAME: str = Field(default="Высокотехнологичный сотрудник Bestconsulting")
 
-    # === LLM Провайдеры ===
-    # OpenAI — основной оркестратор
-    OPENAI_API_KEY: str = Field(default="")
-    OPENAI_BASE_URL: str = Field(default="https://api.openai.com/v1")
-    OPENAI_MODEL: str = Field(default="gpt-5.5")
+    # === LLM через OpenRouter ===
+    OPENROUTER_API_KEY: str = Field(default="")
+    OPENROUTER_BASE_URL: str = Field(default="https://openrouter.ai/api/v1")
+    
+    OPENAI_MODEL: str = Field(default="openai/gpt-4o-mini")
+    DEEPSEEK_MODEL: str = Field(default="deepseek/deepseek-chat")
+    ANTHROPIC_MODEL: str = Field(default="anthropic/claude-sonnet-4-20250514")
+    QWEN_MODEL: str = Field(default="qwen/qwen-coder-plus-latest")
     OPENAI_EMBEDDING_MODEL: str = Field(default="text-embedding-3-large")
-
-    # DeepSeek — аналитика, логика (резерв)
-    DEEPSEEK_API_KEY: str = Field(default="")
-    DEEPSEEK_BASE_URL: str = Field(default="https://api.deepseek.com/v1")
-    DEEPSEEK_MODEL: str = Field(default="deepseek-chat")
-
-    # Anthropic Claude — длинные документы (резерв)
-    ANTHROPIC_API_KEY: str = Field(default="")
-    ANTHROPIC_MODEL: str = Field(default="claude-sonnet-4-20250514")
-
-    # Qwen — программирование (резерв)
-    QWEN_API_KEY: str = Field(default="")
-    QWEN_BASE_URL: str = Field(default="https://dashscope.aliyuncs.com/compatible-mode/v1")
-    QWEN_MODEL: str = Field(default="qwen-coder-plus-latest")
 
     # === Каналы ===
     TELEGRAM_BOT_TOKEN: str = Field(default="")
