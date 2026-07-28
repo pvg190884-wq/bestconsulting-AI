@@ -6,34 +6,61 @@ from fastapi import Depends
 from app.api.deps import get_db
 from app.services.max_service import send_max_message
 from app.services.chat_service import ChatService
+from app.utils.logger import setup_logging
 
 router = APIRouter()
+logger = setup_logging()
 
 
 @router.post("/webhook")
 async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """Принимает webhook от MAX."""
-    data = await request.json()
+    raw_body = await request.body()
+    logger.info(f"[MAX] Raw body: {raw_body.decode()[:500]}")
     
-    # MAX формат: {"message": {"chat": {"id": "..."}, "text": "...", "from": {"id": "..."}}}
-    if "message" not in data:
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.error(f"[MAX] JSON parse error: {e}")
+        return {"ok": False, "error": "invalid json"}
+    
+    logger.info(f"[MAX] Parsed: {data}")
+    
+    # MAX может присылать разные форматы — пробуем найти сообщение
+    message = data.get("message") or data.get("data", {}).get("message") or data
+    
+    if not isinstance(message, dict):
+        logger.warning(f"[MAX] No message found in: {data}")
         return {"ok": True}
     
-    msg = data["message"]
-    chat = msg.get("chat", {})
-    chat_id = str(chat.get("id", ""))
-    text = msg.get("text", "")
-    user_id = str(msg.get("from", {}).get("id", chat_id))
+    chat_id = str(message.get("chat_id") or message.get("chat", {}).get("id") or "")
+    text = message.get("text") or message.get("body") or ""
+    user_id = str(message.get("from_id") or message.get("from", {}).get("id") or chat_id)
+    
+    logger.info(f"[MAX] chat_id={chat_id}, user_id={user_id}, text={text[:100]}")
     
     if not chat_id or not text:
+        logger.warning("[MAX] Missing chat_id or text")
         return {"ok": True}
     
-    # Обрабатываем через ChatService
+    # Обрабатываем
     service = ChatService()
     result = await service.process_message(db, user_id, "max", text)
     
-    # Отправляем ответ обратно в MAX
     response_text = result.get("response", "Ошибка обработки")
-    await send_max_message(chat_id, response_text)
+    ok = await send_max_message(chat_id, response_text)
+    
+    if not ok:
+        logger.error(f"[MAX] Failed to send response to {chat_id}")
     
     return {"ok": True}
+
+
+@router.get("/test")
+async def max_test():
+    """Тестовый endpoint для проверки."""
+    return {
+        "status": "MAX endpoint works",
+        "webhook_url": "POST /api/v1/max/webhook",
+        "note": "MAX должен отправлять сюда webhook-сообщения"
+    }
