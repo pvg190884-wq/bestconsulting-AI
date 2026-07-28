@@ -1,4 +1,4 @@
-"""Escalation Service — детекция и создание эскалаций."""
+"""Escalation Service — детекция, создание и уведомления."""
 import re
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,7 +80,7 @@ async def create_escalation(
     priority: EscalationPriority = EscalationPriority.MEDIUM,
     group: str = "",
 ) -> Escalation:
-    """Создаёт запись об эскалации в БД."""
+    """Создаёт запись об эскалации в БД и отправляет уведомления."""
     
     esc = Escalation(
         id=generate_id(),
@@ -100,14 +100,54 @@ async def create_escalation(
     
     logger.warning(f"[ESCALATE] {esc.id}: {trigger_reason} | {priority.value}")
     
+    # === УВЕДОМЛЕНИЯ ===
+    await _send_notifications(esc, group, recommendation)
+    
     return esc
+
+
+async def _send_notifications(esc: Escalation, group: str, contacts: str):
+    """Отправляет уведомления в Telegram и Email."""
+    
+    # Формируем текст уведомления
+    tg_text = (
+        f"🚨 <b>ЭСКАЛАЦИЯ</b>\\n\\n"
+        f"Причина: {esc.trigger_reason}\\n"
+        f"Группа: {group}\\n"
+        f"Клиент: {esc.client_id}\\n\\n"
+        f"📋 Потребность:\\n{esc.context_summary[:300]}\\n\\n"
+        f"📞 Контакты:\\n{contacts[:200]}\\n\\n"
+        f"ID: {esc.id}"
+    )
+    
+    # 1. Telegram руководителю
+    try:
+        from app.services.telegram_service import send_message_to_admin
+        await send_message_to_admin(tg_text)
+    except Exception as e:
+        logger.error(f"[ESCALATE] Ошибка Telegram: {e}")
+    
+    # 2. Email
+    try:
+        from app.services.email_service import send_email_notification, format_escalation_email
+        subject = f"[ЭСКАЛАЦИЯ] {esc.trigger_reason[:50]} | Группа {group}"
+        body = format_escalation_email(
+            esc_id=esc.id,
+            client_id=esc.client_id,
+            reason=esc.trigger_reason,
+            context=esc.context_summary or "—",
+            contacts=contacts or "—",
+        )
+        send_email_notification(subject, body)
+    except Exception as e:
+        logger.error(f"[ESCALATE] Ошибка Email: {e}")
 
 
 def format_escalation_message(esc: Escalation, group: str) -> str:
     """Форматирует сообщение эскалации."""
     return (
-        f"[Руководитель], требуется ваше решение: {esc.trigger_reason}.\n"
-        f"Контекст: {esc.context_summary or 'Запрос через чат-бот'}.\n"
-        f"Рекомендация: {esc.recommendation or 'Требуется вмешательство человека'}.\n"
+        f"[Руководитель], требуется ваше решение: {esc.trigger_reason}.\\n"
+        f"Контекст: {esc.context_summary or 'Запрос через чат-бот'}.\\n"
+        f"Рекомендация: {esc.recommendation or 'Требуется вмешательство человека'}.\\n"
         f"Срочность: {esc.priority.value}. Группа: {group}."
     )
