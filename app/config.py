@@ -16,10 +16,11 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET: str = Field(default="change-me-in-production")
     AGENT_NAME: str = Field(default="Высокотехнологичный сотрудник Bestconsulting")
 
-    # === LLM через OpenRouter ===
+    # === LLM через OpenRouter (единый шлюз) ===
     OPENROUTER_API_KEY: str = Field(default="")
     OPENROUTER_BASE_URL: str = Field(default="https://openrouter.ai/api/v1")
     
+    # Модели через OpenRouter
     OPENAI_MODEL: str = Field(default="openai/gpt-4o-mini")
     DEEPSEEK_MODEL: str = Field(default="deepseek/deepseek-chat")
     ANTHROPIC_MODEL: str = Field(default="anthropic/claude-sonnet-4-20250514")
