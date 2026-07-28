@@ -1,46 +1,51 @@
 """Chat API — живой диалог с GPT-оркестратором."""
 import time
+import traceback
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
-from app.services.chat_service import ChatService
-from app.utils.security import generate_id
 
 router = APIRouter()
-chat_service = ChatService()
 
 
 class ChatRequest(BaseModel):
     message: str
     user_id: str
     channel: str = "web"
-    session_id: str | None = None
 
 
-class ChatResponse(BaseModel):
-    response: str
-    model_used: str
-    processing_time: float
-    session_id: str
-
-
-@router.post("/", response_model=ChatResponse)
+@router.post("/")
 async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     start = time.time()
-
-    result = await chat_service.process_message(
-        message=request.message,
-        user_id=request.user_id,
-        channel=request.channel,
-        session_id=request.session_id or generate_id(),
-        db=db,
-    )
-
-    return ChatResponse(
-        response=result["response"],
-        model_used=result["model_used"],
-        processing_time=round(time.time() - start, 3),
-        session_id=result["session_id"],
-    )
+    
+    try:
+        from app.services.chat_service import ChatService
+        service = ChatService()
+        
+        result = await service.process_message(
+            db=db,
+            client_id=request.user_id,
+            channel=request.channel,
+            message=request.message,
+        )
+        
+        return {
+            "response": result["response"],
+            "model_used": result["model_used"],
+            "processing_time": round(time.time() - start, 3),
+            "session_id": result["session_id"],
+            "group": result.get("group"),
+            "requires_identification": result.get("requires_identification", False),
+        }
+        
+    except Exception as e:
+        err = traceback.format_exc()
+        return {
+            "response": f"Ошибка сервера: {str(e)[:200]}",
+            "model_used": "error",
+            "processing_time": round(time.time() - start, 3),
+            "session_id": f"{request.user_id}_{request.channel}",
+            "error_detail": err[:500],
+        }
