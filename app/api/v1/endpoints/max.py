@@ -16,7 +16,7 @@ logger = setup_logging()
 async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """Принимает webhook от MAX."""
     raw_body = await request.body()
-    logger.info(f"[MAX] Raw body: {raw_body.decode()[:500]}")
+    logger.info(f"[MAX] Raw body: {raw_body.decode()[:800]}")
     
     try:
         data = await request.json()
@@ -24,16 +24,17 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         logger.error(f"[MAX] JSON parse error: {e}")
         return {"ok": False, "error": "invalid json"}
     
-    logger.info(f"[MAX] Parsed: {data}")
+    logger.info(f"[MAX] Parsed: {str(data)[:500]}")
     
-    # MAX может присылать разные форматы — пробуем найти сообщение
+    # MAX формат: {"message": {"chat_id": 123, "text": "...", "from": {"id": ...}}}
     message = data.get("message") or data.get("data", {}).get("message") or data
     
     if not isinstance(message, dict):
-        logger.warning(f"[MAX] No message found in: {data}")
+        logger.warning(f"[MAX] No message found in: {str(data)[:300]}")
         return {"ok": True}
     
-    chat_id = str(message.get("chat_id") or message.get("chat", {}).get("id") or "")
+    # Извлекаем chat_id (число) и текст
+    chat_id = message.get("chat_id") or message.get("chat", {}).get("id") or ""
     text = message.get("text") or message.get("body") or ""
     user_id = str(message.get("from_id") or message.get("from", {}).get("id") or chat_id)
     
@@ -43,10 +44,11 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         logger.warning("[MAX] Missing chat_id or text")
         return {"ok": True}
     
-    # Обрабатываем
+    # Обрабатываем через ChatService
     service = ChatService()
     result = await service.process_message(db, user_id, "max", text)
     
+    # Отправляем ответ обратно в MAX
     response_text = result.get("response", "Ошибка обработки")
     ok = await send_max_message(chat_id, response_text)
     
@@ -58,7 +60,7 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.get("/test")
 async def max_test():
-    """Тестовый endpoint для проверки."""
+    """Тестовый endpoint."""
     return {
         "status": "MAX endpoint works",
         "webhook_url": "POST /api/v1/max/webhook",
