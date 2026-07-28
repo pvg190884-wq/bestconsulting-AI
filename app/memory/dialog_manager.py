@@ -1,6 +1,7 @@
 """Dialog Manager — управление диалогами и памятью."""
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
+from sqlalchemy.orm.attributes import flag_modified
 from app.db.models.chat import ChatSession, ChatMessage
 from app.db.models.client import Client
 from app.utils.security import generate_id
@@ -34,11 +35,11 @@ class DialogManager:
             if not client.extra_data:
                 client.extra_data = {}
             client.extra_data["group"] = group
+            flag_modified(client, "extra_data")
             await db.commit()
             logger.info(f"[Dialog] Группа {group} сохранена для {client_id}")
 
     async def get_client_contacts(self, db: AsyncSession, client_id: str) -> dict:
-        """Возвращает контакты клиента."""
         result = await db.execute(select(Client).where(Client.external_id == client_id))
         client = result.scalar_one_or_none()
         if client and client.extra_data:
@@ -46,18 +47,17 @@ class DialogManager:
         return {}
 
     async def set_client_contacts(self, db: AsyncSession, client_id: str, contacts: dict):
-        """Сохраняет контакты клиента."""
         result = await db.execute(select(Client).where(Client.external_id == client_id))
         client = result.scalar_one_or_none()
         if client:
             if not client.extra_data:
                 client.extra_data = {}
             client.extra_data["contacts"] = contacts
+            flag_modified(client, "extra_data")
             await db.commit()
             logger.info(f"[Dialog] Контакты сохранены для {client_id}")
 
     async def get_pending_escalation(self, db: AsyncSession, client_id: str) -> dict | None:
-        """Проверяет, ожидает ли эскалация контактов."""
         result = await db.execute(select(Client).where(Client.external_id == client_id))
         client = result.scalar_one_or_none()
         if client and client.extra_data:
@@ -65,21 +65,21 @@ class DialogManager:
         return None
 
     async def set_pending_escalation(self, db: AsyncSession, client_id: str, data: dict):
-        """Сохраняет данные ожидающей эскалации."""
         result = await db.execute(select(Client).where(Client.external_id == client_id))
         client = result.scalar_one_or_none()
         if client:
             if not client.extra_data:
                 client.extra_data = {}
             client.extra_data["pending_escalation"] = data
+            flag_modified(client, "extra_data")
             await db.commit()
 
     async def clear_pending_escalation(self, db: AsyncSession, client_id: str):
-        """Убирает флаг ожидающей эскалации."""
         result = await db.execute(select(Client).where(Client.external_id == client_id))
         client = result.scalar_one_or_none()
         if client and client.extra_data:
             client.extra_data.pop("pending_escalation", None)
+            flag_modified(client, "extra_data")
             await db.commit()
 
     async def get_history(self, db: AsyncSession, session_id: str, limit: int = 20) -> list[dict]:
