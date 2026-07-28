@@ -10,7 +10,6 @@ from app.utils.logger import setup_logging
 
 logger = setup_logging()
 
-# === Организации Группы А (из промпта) ===
 GROUP_A_ORGS = [
     "газпром инвест", "газстройпром", "системы управления",
     "ленгазспецстрой", "стройтранснефтегаз", "газпром", "газ строй",
@@ -35,7 +34,6 @@ GROUP_CONTEXT = {
 
 
 def _load_system_prompt() -> str:
-    """Загружает системный промпт из файла или использует встроенный."""
     try:
         with open("app/prompts/system_prompt.txt", "r", encoding="utf-8") as f:
             return f.read()
@@ -100,15 +98,93 @@ class ChatService:
                 await self.dialog.set_client_group(db, client_id, group)
                 logger.info(f"[Chat] Клиент {client_id} → Группа B (по умолчанию)")
 
-        # === ЭСКАЛАЦИЯ: проверяем сообщение перед ответом ===
-        from app.services.escalation_service import detect_escalation, create_escalation, format_escalation_message
+        # === ПРОВЕРКА: ожидаем контакты для эскалации? ===
+        pending = await self.dialog.get_pending_escalation(db, client_id)
+        if pending:
+            # Клиент прислал контакты — сохраняем и создаём эскалацию
+            contacts = {"info": message, "provided_at": time.time()}
+            await self.dialog.set_client_contacts(db, client_id, contacts)
+            await self.dialog.clear_pending_escalation(db, client_id)
+            
+            # Контекст из истории (предыдущие сообщения пользователя)
+            context_msgs = [h["content"] for h in history[-5:] if h["role"] == "user"]
+            context_summary = " | ".join(context_msgs)[:400] if context_msgs else "Запрос через чат-бот"
+            
+            from app.services.escalation_service import create_escalation, EscalationPriority
+            esc = await create_escalation(
+                db=db,
+                session_id=session_id,
+                client_id=client_id,
+                channel=channel,
+                trigger_reason=pending["reason"],
+                trigger_message=context_summary,
+                context_summary=f"Потребность клиента: {context_summary}",
+                recommendation=f"Контакты для связи: {message[:200]}",
+                priority=EscalationPriority(pending["priority"]),
+                group=pending["group"],
+            )
+            
+            response_text = (
+                "Спасибо! Ваш запрос с контактными данными передан руководителю. "
+                "Ожидайте связи в ближайшее время."
+            )
+            
+            await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
+            await self.dialog.save_message(
+                db, session_id, client_id, channel, "assistant", response_text,
+                model_used="escalation", tokens_used=0
+            )
+            
+            return {
+                "response": response_text,
+                "model_used": "escalation",
+                "processing_time": round(time.time() - start_time, 3),
+                "session_id": session_id,
+                "group": pending["group"],
+                "escalation": True,
+                "escalation_id": esc.id,
+            }
+
+        # === ЭСКАЛАЦИЯ: проверяем сообщение ===
+        from app.services.escalation_service import detect_escalation, create_escalation, EscalationPriority
         
         needs_esc, reason, priority = detect_escalation(message, group or "B")
         
         if needs_esc:
-            await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
+            # Проверяем есть ли контакты
+            contacts = await self.dialog.get_client_contacts(db, client_id)
             
-            context = " ".join([h["content"] for h in history[-3:]])
+            if not contacts or not contacts.get("info"):
+                # Нет контактов — сохраняем pending и просим контакты
+                await self.dialog.set_pending_escalation(db, client_id, {
+                    "reason": reason,
+                    "priority": priority.value,
+                    "group": group
+                })
+                await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
+                
+                response_text = (
+                    "Ваш запрос требует внимания руководителя. "
+                    "Для оперативной связи, прошу направить ваши контакты: имя, телефон, email."
+                )
+                await self.dialog.save_message(
+                    db, session_id, client_id, channel, "assistant", response_text,
+                    model_used="system", tokens_used=0
+                )
+                
+                return {
+                    "response": response_text,
+                    "model_used": "system",
+                    "processing_time": round(time.time() - start_time, 3),
+                    "session_id": session_id,
+                    "group": group,
+                    "awaiting_contacts": True,
+                }
+            
+            # Контакты есть — создаём эскалацию сразу
+            context_msgs = [h["content"] for h in history[-5:] if h["role"] == "user"]
+            context_summary = " | ".join(context_msgs)[:400] if context_msgs else "Запрос через чат-бот"
+            
             esc = await create_escalation(
                 db=db,
                 session_id=session_id,
@@ -116,10 +192,10 @@ class ChatService:
                 channel=channel,
                 trigger_reason=reason,
                 trigger_message=message,
-                context_summary=context[:500],
-                recommendation="Требуется вмешательство руководителя",
+                context_summary=f"Потребность: {context_summary}",
+                recommendation=f"Контакты клиента: {contacts.get('info', 'Нет')[:200]}",
                 priority=priority,
-                group=group or "B",
+                group=group,
             )
             
             response_text = (
@@ -127,6 +203,7 @@ class ChatService:
                 "Информация передана. Ожидайте ответа."
             )
             
+            await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
             await self.dialog.save_message(
                 db, session_id, client_id, channel, "assistant", response_text,
                 model_used="escalation", tokens_used=0
@@ -142,6 +219,7 @@ class ChatService:
                 "escalation_id": esc.id,
             }
 
+        # === ОБЫЧНЫЙ ДИАЛОГ ===
         await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
         history = await self.dialog.get_history(db, session_id, limit=10)
         knowledge_text = await self._fetch_knowledge(db, message, group)
@@ -193,19 +271,15 @@ class ChatService:
 
     async def _detect_group_advanced(self, db: AsyncSession, text: str) -> str:
         t = text.lower()
-
         for org in GROUP_A_ORGS:
             if org in t:
                 return "A"
-
         for kw in GROUP_KEYWORDS["C"]:
             if kw in t:
                 return "C"
-
         for kw in GROUP_KEYWORDS["B"]:
             if kw in t:
                 return "B"
-
         try:
             sql = text("""
                 SELECT title, tags 
@@ -221,7 +295,6 @@ class ChatService:
                 return "A"
         except Exception as e:
             logger.warning(f"[Chat] Поиск организации: {e}")
-
         return None
 
     async def _fetch_knowledge(self, db: AsyncSession, query: str, group: str) -> str:
