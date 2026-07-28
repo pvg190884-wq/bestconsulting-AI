@@ -1,14 +1,9 @@
-"""MAX Service — отправка сообщений и webhook с обходом SSL Минцифры."""
-import os
+"""MAX Service — отправка сообщений и webhook."""
 import httpx
 from app.config import settings
 from app.utils.logger import setup_logging
 
 logger = setup_logging()
-
-# Отключаем проверку SSL для сертификата Минцифры (временно)
-os.environ["SSL_CERT_FILE"] = ""
-os.environ["SSL_CERT_DIR"] = ""
 
 MAX_API_HOST = "https://platform-api2.max.ru"
 
@@ -19,7 +14,6 @@ async def send_max_message(chat_id: str | int, text: str):
         logger.warning("[MAX] Токен не настроен")
         return False
 
-    # chat_id должен быть числом (int)
     try:
         cid = int(chat_id)
     except (ValueError, TypeError):
@@ -27,28 +21,25 @@ async def send_max_message(chat_id: str | int, text: str):
         return False
 
     url = f"{MAX_API_HOST}/messages"
-    payload = {
-        "chat_id": cid,  # Число, не строка!
-        "text": text,
-    }
+    payload = {"chat_id": cid, "text": text}
     headers = {
         "Authorization": settings.MAX_API_TOKEN,
         "Content-Type": "application/json",
     }
 
     try:
-        # verify=False — обход SSL Минцифры
+        # verify=False — только для этого запроса, обход SSL Минцифры
         async with httpx.AsyncClient(timeout=15, verify=False) as client:
             r = await client.post(url, json=payload, headers=headers)
-            logger.info(f"[MAX] Ответ API: {r.status_code} | {r.text[:200]}")
+            logger.info(f"[MAX] API ответ: {r.status_code} | {r.text[:200]}")
             if r.status_code == 200:
-                logger.info(f"[MAX] Сообщение отправлено в чат {cid}")
+                logger.info(f"[MAX] Отправлено в чат {cid}")
                 return True
             else:
-                logger.error(f"[MAX] API ошибка: {r.status_code} | {r.text[:300]}")
+                logger.error(f"[MAX] API ошибка: {r.status_code}")
                 return False
     except Exception as e:
-        logger.error(f"[MAX] Ошибка отправки: {e}")
+        logger.error(f"[MAX] Ошибка: {e}")
         return False
 
 
@@ -58,9 +49,7 @@ async def set_max_webhook(webhook_url: str):
         return False
 
     url = f"{MAX_API_HOST}/webhook/set"
-    payload = {
-        "url": webhook_url,
-    }
+    payload = {"url": webhook_url}
     headers = {
         "Authorization": settings.MAX_API_TOKEN,
         "Content-Type": "application/json",
@@ -69,15 +58,14 @@ async def set_max_webhook(webhook_url: str):
         async with httpx.AsyncClient(timeout=15, verify=False) as client:
             r = await client.post(url, json=payload, headers=headers)
             data = r.json()
-            logger.info(f"[MAX] Webhook set: {data}")
             if data.get("ok") or r.status_code == 200:
-                logger.info(f"[MAX] Webhook установлен: {webhook_url}")
+                logger.info(f"[MAX] Webhook OK: {webhook_url}")
                 return True
             else:
-                logger.error(f"[MAX] Ошибка webhook: {data}")
+                logger.error(f"[MAX] Webhook error: {data}")
                 return False
     except Exception as e:
-        logger.error(f"[MAX] Ошибка установки webhook: {e}")
+        logger.error(f"[MAX] Webhook exception: {e}")
         return False
 
 
@@ -93,4 +81,4 @@ async def delete_max_webhook():
             await client.post(url, headers=headers)
             logger.info("[MAX] Webhook удалён")
     except Exception as e:
-        logger.error(f"[MAX] Ошибка удаления webhook: {e}")
+        logger.error(f"[MAX] Delete error: {e}")
