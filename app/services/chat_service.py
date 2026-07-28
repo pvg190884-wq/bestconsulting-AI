@@ -10,32 +10,48 @@ from app.utils.logger import setup_logging
 
 logger = setup_logging()
 
+# === Организации Группы А (из промпта) ===
+GROUP_A_ORGS = [
+    "газпром инвест", "газстройпром", "системы управления",
+    "ленгазспецстрой", "стройтранснефтегаз", "газпром", "газ строй",
+]
+
 GROUP_KEYWORDS = {
-    "A": ["личн", "контакт", "агафонов", "павлов", "партнёр", "основатель", "группа а", "группа a", "личное", "конфиденциально", "основател", "владелец", "акционер"],
-    "B": ["услуг", "лендинг", "сайт", "цена", "заказ", "прайс", "услуга", "группа б", "группа b", "стоимость", "калькулятор", "разработка", "дизайн", "seo", "реклама"],
-    "C": ["общий", "вопрос", "информация", "другое", "группа в", "группа c", "консультация", "звонок"],
+    "A": ["газпром", "газстройпром", "системы управления", "ленгазспецстрой", "стройтранснефтегаз", "корпоративн", "ооо", "ао"],
+    "B": ["услуг", "лендинг", "сайт", "цена", "заказ", "прайс", "услуга", "стоимость", "калькулятор", "разработка", "дизайн", "seo", "реклама", "контент", "продвижение", "маркетинг"],
+    "C": ["семья", "друг", "личн", "знаком", "родственник", "дом", "дружб"],
 }
 
-SYSTEM_PROMPT_CORE = (
-    "Ты — Высокотехнологичный сотрудник Bestconsulting. "
-    "Правила ответа: "
-    "1. ТОЛЬКО конкретный ответ. Без размышлений, догадок, философии. "
-    "2. Без вводных фраз типа 'Я думаю', 'Возможно', 'Судя по всему'. "
-    "3. Если не знаешь — скажи 'Нет данных'. "
-    "4. Кратко. По существу. "
+IDENTIFICATION_QUESTION = (
+    "Здравствуйте! Я высокотехнологичный сотрудник Bestconsulting. "
+    "Уточните, из какой вы организации и представьтесь?"
 )
 
 GROUP_CONTEXT = {
-    "A": "Клиент Группы А (личные контакты, конфиденциально). ",
-    "B": "Клиент Группы Б (услуги компании). ",
-    "C": "Клиент Группы В (общий). ",
+    "A": "Клиент Группы А (Корпоративный: Газпром инвест, Газстройпром, Системы управления, Ленгазспецстрой, СтройТрансНефтегаз). Стиль: строгий деловой. НЕ предлагать услуги Bestconsulting. НЕ брать деньги. ",
+    "B": "Клиент Группы Б (Клиент Bestconsulting). Стиль: экспертный/консультационный. Услуги по прайсу. ",
+    "C": "Клиент Группы В (Личные контакты: семья, друзья). Стиль: тёплый личный. НИКАКИХ продаж и цен. ",
 }
+
+
+def _load_system_prompt() -> str:
+    """Загружает системный промпт из файла или использует встроенный."""
+    try:
+        with open("app/prompts/system_prompt.txt", "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return (
+            "Ты — Bestconsulting, Senior specialist (10+ лет опыта). "
+            "Правила ответа: 1. ТОЛЬКО конкретный ответ. Без размышлений. "
+            "2. Без вводных фраз. 3. Если не знаешь — скажи 'Нет данных'. 4. Кратко. По существу."
+        )
 
 
 class ChatService:
     def __init__(self):
         self.llm = LLMService()
         self.dialog = DialogManager()
+        self.system_prompt = _load_system_prompt()
 
     async def process_message(self, db: AsyncSession, client_id: str, channel: str, message: str) -> dict:
         try:
@@ -56,24 +72,18 @@ class ChatService:
         start_time = time.time()
         session_id = f"{client_id}_{channel}"
 
-        # 1. Клиент
         client = await self.dialog._get_or_create_client(db, client_id, channel)
-
-        # 2. Группа
         group = await self.dialog.get_client_group(db, client_id)
+        history = await self.dialog.get_history(db, session_id, limit=5)
 
         if not group:
-            group = self._detect_group(message)
-            if group:
-                await self.dialog.set_client_group(db, client_id, group)
-                logger.info(f"[Chat] Клиент {client_id} → Группа {group}")
-            else:
+            if not history:
+                await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
+                await self.dialog.save_message(
+                    db, session_id, client_id, channel, "assistant", IDENTIFICATION_QUESTION
+                )
                 return {
-                    "response": (
-                        "Здравствуйте! Чтобы я мог помочь точнее, уточните: "
-                        "ваш вопрос связан с личными контактами (Группа А), "
-                        "с услугами компании (Группа Б), или это общий вопрос (Группа В)?"
-                    ),
+                    "response": IDENTIFICATION_QUESTION,
                     "model_used": "system",
                     "processing_time": round(time.time() - start_time, 3),
                     "session_id": session_id,
@@ -81,17 +91,20 @@ class ChatService:
                     "requires_identification": True,
                 }
 
-        # 3. Сохраняем
+            group = await self._detect_group_advanced(db, message)
+            if group:
+                await self.dialog.set_client_group(db, client_id, group)
+                logger.info(f"[Chat] Клиент {client_id} → Группа {group}")
+            else:
+                group = "B"
+                await self.dialog.set_client_group(db, client_id, group)
+                logger.info(f"[Chat] Клиент {client_id} → Группа B (по умолчанию)")
+
         await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
-
-        # 4. История
         history = await self.dialog.get_history(db, session_id, limit=10)
-
-        # 5. Знания
         knowledge_text = await self._fetch_knowledge(db, message, group)
 
-        # 6. Промпт
-        system_msg = SYSTEM_PROMPT_CORE + GROUP_CONTEXT.get(group, "")
+        system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT.get(group, "")
 
         messages = [{"role": "system", "content": system_msg}]
         if knowledge_text:
@@ -100,7 +113,6 @@ class ChatService:
             messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": message})
 
-        # 7. LLM
         try:
             result = await self.llm.generate("openai", messages, temperature=0.2)
             response_text = result["content"]
@@ -112,7 +124,6 @@ class ChatService:
             model_used = "error"
             tokens = 0
 
-        # 8. Сохраняем ответ
         await self.dialog.save_message(
             db, session_id, client_id, channel, "assistant", response_text,
             model_used=model_used, tokens_used=tokens
@@ -129,10 +140,46 @@ class ChatService:
 
     def _detect_group(self, text: str):
         t = text.lower()
+        for org in GROUP_A_ORGS:
+            if org in t:
+                return "A"
         for grp, keywords in GROUP_KEYWORDS.items():
             for kw in keywords:
                 if kw in t:
                     return grp
+        return None
+
+    async def _detect_group_advanced(self, db: AsyncSession, text: str) -> str:
+        t = text.lower()
+
+        for org in GROUP_A_ORGS:
+            if org in t:
+                return "A"
+
+        for kw in GROUP_KEYWORDS["C"]:
+            if kw in t:
+                return "C"
+
+        for kw in GROUP_KEYWORDS["B"]:
+            if kw in t:
+                return "B"
+
+        try:
+            sql = text("""
+                SELECT title, tags 
+                FROM knowledge_items 
+                WHERE verified = true 
+                  AND tags @> '["группа_а"]'
+                  AND (title ILIKE :q OR original_content ILIKE :q)
+                LIMIT 1
+            """)
+            result = await db.execute(sql, {"q": f"%{text[:50]}%"})
+            row = result.mappings().first()
+            if row:
+                return "A"
+        except Exception as e:
+            logger.warning(f"[Chat] Поиск организации: {e}")
+
         return None
 
     async def _fetch_knowledge(self, db: AsyncSession, query: str, group: str) -> str:
@@ -149,12 +196,11 @@ class ChatService:
             rows = result.mappings().all()
             if not rows:
                 return ""
-            
-            lines = []
+            parts = []
             for r in rows:
-                lines.append(f"- {r['title']}")
-            
-            return "Контекст:\n" + "\n".join(lines) if lines else ""
+                content = r.get('original_content', '') or ''
+                parts.append(f"=== {r['title']} ===\n{content[:1000]}")
+            return "\n\n".join(parts) if parts else ""
         except Exception as e:
             logger.warning(f"[Chat] Поиск знаний: {e}")
             return ""
