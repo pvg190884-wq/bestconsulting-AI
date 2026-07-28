@@ -1,5 +1,6 @@
 """Chat Service — обработка сообщений с идентификацией группы и RAG."""
 import time
+import traceback
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -25,9 +26,9 @@ SYSTEM_PROMPT_CORE = (
 )
 
 GROUP_CONTEXT = {
-    "A": "Клиент Группы А (личные контакты, конфиденциально). Доступны личные контакты основателей. ",
-    "B": "Клиент Группы Б (услуги компании). Доступны прайсы, услуги, сроки. ",
-    "C": "Клиент Группы В (общий). Стандартные ответы, без конфиденциальных данных. ",
+    "A": "Клиент Группы А (личные контакты, конфиденциально). ",
+    "B": "Клиент Группы Б (услуги компании). ",
+    "C": "Клиент Группы В (общий). ",
 }
 
 
@@ -37,13 +38,28 @@ class ChatService:
         self.dialog = DialogManager()
 
     async def process_message(self, db: AsyncSession, client_id: str, channel: str, message: str) -> dict:
+        try:
+            return await self._process(db, client_id, channel, message)
+        except Exception as e:
+            err = traceback.format_exc()
+            logger.error(f"[Chat] CRITICAL ERROR: {err}")
+            return {
+                "response": f"Ошибка: {str(e)[:200]}",
+                "model_used": "error",
+                "processing_time": 0,
+                "session_id": f"{client_id}_{channel}",
+                "group": None,
+                "error_detail": str(e)[:500],
+            }
+
+    async def _process(self, db: AsyncSession, client_id: str, channel: str, message: str) -> dict:
         start_time = time.time()
         session_id = f"{client_id}_{channel}"
 
-        # 1. Получаем/создаём клиента
+        # 1. Клиент
         client = await self.dialog._get_or_create_client(db, client_id, channel)
 
-        # 2. Проверяем группу
+        # 2. Группа
         group = await self.dialog.get_client_group(db, client_id)
 
         if not group:
@@ -65,19 +81,18 @@ class ChatService:
                     "requires_identification": True,
                 }
 
-        # 3. Сохраняем сообщение пользователя
+        # 3. Сохраняем
         await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
 
         # 4. История
         history = await self.dialog.get_history(db, session_id, limit=10)
 
-        # 5. Поиск знаний (inline SQL)
+        # 5. Знания
         knowledge_text = await self._fetch_knowledge(db, message, group)
 
-        # 6. Системный промпт
+        # 6. Промпт
         system_msg = SYSTEM_PROMPT_CORE + GROUP_CONTEXT.get(group, "")
 
-        # 7. Сообщения для LLM
         messages = [{"role": "system", "content": system_msg}]
         if knowledge_text:
             messages.append({"role": "system", "content": knowledge_text})
@@ -85,7 +100,7 @@ class ChatService:
             messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": message})
 
-        # 8. LLM (низкая температура)
+        # 7. LLM
         try:
             result = await self.llm.generate("openai", messages, temperature=0.2)
             response_text = result["content"]
@@ -97,7 +112,7 @@ class ChatService:
             model_used = "error"
             tokens = 0
 
-        # 9. Сохраняем ответ
+        # 8. Сохраняем ответ
         await self.dialog.save_message(
             db, session_id, client_id, channel, "assistant", response_text,
             model_used=model_used, tokens_used=tokens
@@ -113,7 +128,6 @@ class ChatService:
         }
 
     def _detect_group(self, text: str):
-        """Определяет группу по ключевым словам."""
         t = text.lower()
         for grp, keywords in GROUP_KEYWORDS.items():
             for kw in keywords:
@@ -122,7 +136,6 @@ class ChatService:
         return None
 
     async def _fetch_knowledge(self, db: AsyncSession, query: str, group: str) -> str:
-        """Ищет знания inline SQL."""
         try:
             sql = text("""
                 SELECT title, original_content, tags 
@@ -139,15 +152,7 @@ class ChatService:
             
             lines = []
             for r in rows:
-                tags = r.get("tags", []) or []
-                if group == "A":
-                    lines.append(f"- {r['title']}")
-                elif group == "B" and any(t in ["группа_б", "услуги", "прайс", "цена"] for t in tags):
-                    lines.append(f"- {r['title']}")
-                elif group == "C" and any(t in ["общее", "группа_в", "faq"] for t in tags):
-                    lines.append(f"- {r['title']}")
-                else:
-                    lines.append(f"- {r['title']}")
+                lines.append(f"- {r['title']}")
             
             return "Контекст:\n" + "\n".join(lines) if lines else ""
         except Exception as e:
