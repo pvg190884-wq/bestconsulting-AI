@@ -1,11 +1,4 @@
-"""Dialog Manager — управление диалогами и памятью.
-
-Уровни памяти:
-1. Диалоговая — текущий разговор (chat_sessions + chat_messages)
-2. Клиентская — история общения с клиентом + группа (A/B/C)
-3. Проектная — контекст проекта (v2.3+)
-4. Глобальная — база знаний компании (knowledge_items)
-"""
+"""Dialog Manager — управление диалогами и памятью."""
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from app.db.models.chat import ChatSession, ChatMessage
@@ -17,27 +10,17 @@ logger = setup_logging()
 
 
 class DialogManager:
-    """Управление диалогами."""
-
     async def _get_or_create_client(self, db: AsyncSession, client_id: str, channel: str) -> Client:
-        """Получает клиента или создаёт нового."""
         result = await db.execute(select(Client).where(Client.external_id == client_id))
         client = result.scalar_one_or_none()
-        
         if not client:
-            client = Client(
-                id=generate_id(),
-                external_id=client_id,
-                channel=channel,
-            )
+            client = Client(id=generate_id(), external_id=client_id, channel=channel)
             db.add(client)
             await db.commit()
             logger.info(f"[Dialog] Создан новый клиент {client_id}")
-        
         return client
 
     async def get_client_group(self, db: AsyncSession, client_id: str) -> str | None:
-        """Возвращает группу клиента (A, B, C) или None."""
         result = await db.execute(select(Client).where(Client.external_id == client_id))
         client = result.scalar_one_or_none()
         if client and client.extra_data:
@@ -45,7 +28,6 @@ class DialogManager:
         return None
 
     async def set_client_group(self, db: AsyncSession, client_id: str, group: str):
-        """Сохраняет группу клиента в extra_data."""
         result = await db.execute(select(Client).where(Client.external_id == client_id))
         client = result.scalar_one_or_none()
         if client:
@@ -55,8 +37,52 @@ class DialogManager:
             await db.commit()
             logger.info(f"[Dialog] Группа {group} сохранена для {client_id}")
 
+    async def get_client_contacts(self, db: AsyncSession, client_id: str) -> dict:
+        """Возвращает контакты клиента."""
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client and client.extra_data:
+            return client.extra_data.get("contacts", {})
+        return {}
+
+    async def set_client_contacts(self, db: AsyncSession, client_id: str, contacts: dict):
+        """Сохраняет контакты клиента."""
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client:
+            if not client.extra_data:
+                client.extra_data = {}
+            client.extra_data["contacts"] = contacts
+            await db.commit()
+            logger.info(f"[Dialog] Контакты сохранены для {client_id}")
+
+    async def get_pending_escalation(self, db: AsyncSession, client_id: str) -> dict | None:
+        """Проверяет, ожидает ли эскалация контактов."""
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client and client.extra_data:
+            return client.extra_data.get("pending_escalation")
+        return None
+
+    async def set_pending_escalation(self, db: AsyncSession, client_id: str, data: dict):
+        """Сохраняет данные ожидающей эскалации."""
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client:
+            if not client.extra_data:
+                client.extra_data = {}
+            client.extra_data["pending_escalation"] = data
+            await db.commit()
+
+    async def clear_pending_escalation(self, db: AsyncSession, client_id: str):
+        """Убирает флаг ожидающей эскалации."""
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client and client.extra_data:
+            client.extra_data.pop("pending_escalation", None)
+            await db.commit()
+
     async def get_history(self, db: AsyncSession, session_id: str, limit: int = 20) -> list[dict]:
-        """Получает историю сообщений сессии."""
         result = await db.execute(
             select(ChatMessage)
             .where(ChatMessage.session_id == session_id)
@@ -69,31 +95,16 @@ class DialogManager:
     async def save_message(self, db: AsyncSession, session_id: str, client_id: str,
                            channel: str, role: str, content: str,
                            model_used: str = None, tokens_used: int = None):
-        """Сохраняет сообщение в БД. Автоматически создаёт клиента и сессию, если нужно."""
-        # 1. Получаем или создаём клиента
         client = await self._get_or_create_client(db, client_id, channel)
-        
-        # 2. Проверяем, есть ли сессия
         result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
         session = result.scalar_one_or_none()
-        
         if not session:
-            session = ChatSession(
-                id=session_id,
-                client_id=client.id,
-                channel=channel,
-            )
+            session = ChatSession(id=session_id, client_id=client.id, channel=channel)
             db.add(session)
             await db.commit()
-        
-        # 3. Сохраняем сообщение
         msg = ChatMessage(
-            id=generate_id(),
-            session_id=session_id,
-            role=role,
-            content=content,
-            model_used=model_used,
-            tokens_used=tokens_used,
+            id=generate_id(), session_id=session_id, role=role, content=content,
+            model_used=model_used, tokens_used=tokens_used,
         )
         db.add(msg)
         await db.commit()
