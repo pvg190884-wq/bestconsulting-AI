@@ -1,5 +1,5 @@
 """BestConsulting AI Core v2.2 — GPT Orchestrator
-Единый ИИ-сотрудник. GPT-5.5 — основной мозг.
+Единый ИИ-сотрудник. GPT — основной мозг.
 """
 import time
 from contextlib import asynccontextmanager
@@ -21,7 +21,7 @@ logger = setup_logging()
 async def lifespan(app: FastAPI):
     logger.info("🚀 CANARY-0001 v2.2 запущен")
     logger.info(f"Окружение: {settings.APP_ENV}")
-    logger.info(f"Оркестратор: {settings.OPENAI_MODEL}")
+    logger.info(f"Оркестратор: {settings.OPENAI_MODEL} (OpenRouter)")
 
     try:
         await init_db()
