@@ -11,60 +11,31 @@ logger = setup_logging()
 ESCALATION_TRIGGERS = {
     "HIGH": {
         "patterns": [
-            r"сч[ёе]т",
-            r"договор",
-            r"заказ",
-            r"оплат",
-            r"деньг",
-            r"цена.*договор",
-            r"юрист",
-            r"адвокат",
-            r"суд",
-            r"иск",
-            r"живой человек",
-            r"оператор",
-            r"менеджер",
-            r"руководитель",
+            r"сч[ёе]т", r"договор", r"заказ", r"оплат", r"деньг",
+            r"юрист", r"адвокат", r"суд", r"иск",
+            r"живой человек", r"оператор", r"менеджер", r"руководитель",
         ],
-        "keywords": ["счёт", "договор", "заказ", "оплата", "юрист", "суд", "живой человек", "оператор"],
     },
     "MEDIUM": {
-        "patterns": [
-            r"конфликт",
-            r"жалоб",
-            r"претензи",
-            r"недовол",
-            r"ошибк",
-            r"сбой",
-            r"не работает",
-        ],
-        "keywords": ["конфликт", "жалоба", "претензия", "недовольство"],
+        "patterns": [r"конфликт", r"жалоб", r"претензи", r"недовол", r"сбой"],
     },
 }
 
-GROUP_A_TECH_KEYWORDS = ["сложный технический", "инженер", "проект", "чертеж", "смета", "пнр", "смр"]
+GROUP_A_TECH_KEYWORDS = ["сложный технический", "инженер", "проект", "чертеж", "смета"]
 
 
 def detect_escalation(message: str, group: str) -> tuple[bool, str, EscalationPriority]:
-    """Анализирует сообщение на признаки эскалации."""
     t = message.lower()
-    
     for pattern in ESCALATION_TRIGGERS["HIGH"]["patterns"]:
         if re.search(pattern, t):
-            reason = f"Триггер: {pattern.replace(chr(92), '')}"
-            return True, reason, EscalationPriority.HIGH
-    
+            return True, f"Триггер: {pattern.replace(chr(92), '')}", EscalationPriority.HIGH
     for pattern in ESCALATION_TRIGGERS["MEDIUM"]["patterns"]:
         if re.search(pattern, t):
-            reason = f"Триггер: {pattern.replace(chr(92), '')}"
-            return True, reason, EscalationPriority.MEDIUM
-    
+            return True, f"Триггер: {pattern.replace(chr(92), '')}", EscalationPriority.MEDIUM
     if group == "A":
         for kw in GROUP_A_TECH_KEYWORDS:
             if kw in t:
-                reason = "Сложный технический вопрос Группы А"
-                return True, reason, EscalationPriority.HIGH
-    
+                return True, "Сложный технический вопрос Группы А", EscalationPriority.HIGH
     return False, "", EscalationPriority.LOW
 
 
@@ -80,7 +51,6 @@ async def create_escalation(
     priority: EscalationPriority = EscalationPriority.MEDIUM,
     group: str = "",
 ) -> Escalation:
-    """Создаёт запись об эскалации в БД и отправляет уведомления."""
     
     esc = Escalation(
         id=generate_id(),
@@ -98,10 +68,13 @@ async def create_escalation(
     db.add(esc)
     await db.commit()
     
-    logger.warning(f"[ESCALATE] {esc.id}: {trigger_reason} | {priority.value}")
+    logger.warning(f"[ESCALATE] Создана: {esc.id} | {trigger_reason} | {priority.value}")
     
-    # === УВЕДОМЛЕНИЯ ===
-    await _send_notifications(esc, group, recommendation)
+    # Уведомления — в фоне, не блокируем ответ клиенту
+    try:
+        await _send_notifications(esc, group, recommendation)
+    except Exception as e:
+        logger.error(f"[ESCALATE] Ошибка уведомлений: {e}")
     
     return esc
 
@@ -109,9 +82,8 @@ async def create_escalation(
 async def _send_notifications(esc: Escalation, group: str, contacts: str):
     """Отправляет уведомления в Telegram и Email."""
     
-    logger.info(f"[NOTIFY] Начинаю отправку уведомлений для эскалации {esc.id}")
+    logger.info(f"[NOTIFY] Старт для {esc.id}")
     
-    # Формируем текст уведомления
     tg_text = (
         f"🚨 <b>ЭСКАЛАЦИЯ</b>\n\n"
         f"Причина: {esc.trigger_reason}\n"
@@ -122,20 +94,20 @@ async def _send_notifications(esc: Escalation, group: str, contacts: str):
         f"ID: {esc.id}"
     )
     
-    # 1. Telegram руководителю
-    logger.info(f"[NOTIFY] Попытка отправки Telegram...")
+    # 1. Telegram
+    logger.info("[NOTIFY] Telegram...")
     try:
         from app.services.telegram_service import send_message_to_admin
         await send_message_to_admin(tg_text)
-        logger.info("[NOTIFY] Telegram отправлен успешно")
+        logger.info("[NOTIFY] Telegram OK")
     except Exception as e:
-        logger.error(f"[NOTIFY] Ошибка Telegram: {e}")
+        logger.error(f"[NOTIFY] Telegram FAIL: {e}")
     
     # 2. Email
-    logger.info(f"[NOTIFY] Попытка отправки Email...")
+    logger.info("[NOTIFY] Email...")
     try:
         from app.services.email_service import send_email_notification, format_escalation_email
-        subject = f"[ЭСКАЛАЦИЯ] {esc.trigger_reason[:50]} | Группа {group}"
+        subject = f"[ЭСКАЛАЦИЯ] {esc.trigger_reason[:50]} | {group}"
         body = format_escalation_email(
             esc_id=esc.id,
             client_id=esc.client_id,
@@ -143,20 +115,7 @@ async def _send_notifications(esc: Escalation, group: str, contacts: str):
             context=esc.context_summary or "—",
             contacts=contacts or "—",
         )
-        result = send_email_notification(subject, body)
-        if result:
-            logger.info("[NOTIFY] Email отправлен успешно")
-        else:
-            logger.warning("[NOTIFY] Email НЕ отправлен (функция вернула False)")
+        ok = await send_email_notification(subject, body)
+        logger.info(f"[NOTIFY] Email {'OK' if ok else 'FAIL'}")
     except Exception as e:
-        logger.error(f"[NOTIFY] Ошибка Email: {e}")
-
-
-def format_escalation_message(esc: Escalation, group: str) -> str:
-    """Форматирует сообщение эскалации."""
-    return (
-        f"[Руководитель], требуется ваше решение: {esc.trigger_reason}.\n"
-        f"Контекст: {esc.context_summary or 'Запрос через чат-бот'}.\n"
-        f"Рекомендация: {esc.recommendation or 'Требуется вмешательство человека'}.\n"
-        f"Срочность: {esc.priority.value}. Группа: {group}."
-    )
+        logger.error(f"[NOTIFY] Email FAIL: {e}")
