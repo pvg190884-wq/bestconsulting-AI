@@ -1,4 +1,11 @@
-"""Dialog Manager — управление диалогами и памятью."""
+"""Dialog Manager — управление диалогами и памятью.
+
+Уровни памяти:
+1. Диалоговая — текущий разговор (chat_sessions + chat_messages)
+2. Клиентская — история общения с клиентом + группа (A/B/C)
+3. Проектная — контекст проекта (v2.3+)
+4. Глобальная — база знаний компании (knowledge_items)
+"""
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from app.db.models.chat import ChatSession, ChatMessage
@@ -29,6 +36,25 @@ class DialogManager:
         
         return client
 
+    async def get_client_group(self, db: AsyncSession, client_id: str) -> str | None:
+        """Возвращает группу клиента (A, B, C) или None."""
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client and client.extra_data:
+            return client.extra_data.get("group")
+        return None
+
+    async def set_client_group(self, db: AsyncSession, client_id: str, group: str):
+        """Сохраняет группу клиента в extra_data."""
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client:
+            if not client.extra_data:
+                client.extra_data = {}
+            client.extra_data["group"] = group
+            await db.commit()
+            logger.info(f"[Dialog] Группа {group} сохранена для {client_id}")
+
     async def get_history(self, db: AsyncSession, session_id: str, limit: int = 20) -> list[dict]:
         """Получает историю сообщений сессии."""
         result = await db.execute(
@@ -54,7 +80,7 @@ class DialogManager:
         if not session:
             session = ChatSession(
                 id=session_id,
-                client_id=client.id,  # Используем внутренний UUID, а не external_id
+                client_id=client.id,
                 channel=channel,
             )
             db.add(session)
