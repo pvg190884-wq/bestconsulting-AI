@@ -32,18 +32,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Ошибка инициализации БД: {e}")
 
-    # Устанавливаем Telegram webhook
+    # Telegram webhook
     if settings.TELEGRAM_BOT_TOKEN:
         from app.services.telegram_service import set_webhook
         railway_url = os.getenv("RAILWAY_PUBLIC_DOMAIN")
         if railway_url:
-            webhook_full = f"https://{railway_url}/api/v1/telegram/webhook"
-            await set_webhook(webhook_full)
-            logger.info(f"✅ Telegram webhook: {webhook_full}")
-        elif settings.TELEGRAM_WEBHOOK_URL:
-            webhook_full = f"{settings.TELEGRAM_WEBHOOK_URL}/api/v1/telegram/webhook"
-            await set_webhook(webhook_full)
-            logger.info(f"✅ Telegram webhook: {webhook_full}")
+            tg_webhook = f"https://{railway_url}/api/v1/telegram/webhook"
+            await set_webhook(tg_webhook)
+            logger.info(f"✅ Telegram webhook: {tg_webhook}")
+
+    # MAX webhook
+    if settings.MAX_API_TOKEN:
+        from app.services.max_service import set_max_webhook
+        railway_url = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+        if railway_url:
+            max_webhook = f"https://{railway_url}/api/v1/max/webhook"
+            await set_max_webhook(max_webhook)
+            logger.info(f"✅ MAX webhook: {max_webhook}")
 
     yield
     logger.info("🛑 BestConsulting AI Core остановлен")
