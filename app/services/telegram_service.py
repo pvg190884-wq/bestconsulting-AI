@@ -25,6 +25,12 @@ async def send_message(chat_id: int, text: str):
         logger.error(f"[TG] Ошибка отправки: {e}")
 
 
+async def send_message_to_admin(text: str):
+    """Отправляет уведомление руководителю в Telegram."""
+    admin_id = 5718678440  # Твой Telegram ID
+    await send_message(admin_id, text)
+
+
 async def set_webhook(webhook_url: str):
     """Устанавливает webhook для бота."""
     url = f"{TELEGRAM_API}{settings.TELEGRAM_BOT_TOKEN}/setWebhook"
