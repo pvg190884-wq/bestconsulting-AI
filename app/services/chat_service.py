@@ -1,15 +1,14 @@
 """Chat Service — обработка сообщений с идентификацией группы и RAG."""
 import time
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.services.llm_service import LLMService
 from app.memory.dialog_manager import DialogManager
-from app.services.knowledge_service import search_knowledge
 from app.utils.logger import setup_logging
 
 logger = setup_logging()
 
-# Ключевые слова для определения группы
 GROUP_KEYWORDS = {
     "A": ["личн", "контакт", "агафонов", "павлов", "партнёр", "основатель", "группа а", "группа a", "личное", "конфиденциально", "основател", "владелец", "акционер"],
     "B": ["услуг", "лендинг", "сайт", "цена", "заказ", "прайс", "услуга", "группа б", "группа b", "стоимость", "калькулятор", "разработка", "дизайн", "seo", "реклама"],
@@ -48,13 +47,11 @@ class ChatService:
         group = await self.dialog.get_client_group(db, client_id)
 
         if not group:
-            # Пытаемся определить из текста
             group = self._detect_group(message)
             if group:
                 await self.dialog.set_client_group(db, client_id, group)
                 logger.info(f"[Chat] Клиент {client_id} → Группа {group}")
             else:
-                # Не определили — задаём уточняющий вопрос
                 return {
                     "response": (
                         "Здравствуйте! Чтобы я мог помочь точнее, уточните: "
@@ -74,7 +71,7 @@ class ChatService:
         # 4. История
         history = await self.dialog.get_history(db, session_id, limit=10)
 
-        # 5. Поиск знаний (с фильтром по группе)
+        # 5. Поиск знаний (inline SQL)
         knowledge_text = await self._fetch_knowledge(db, message, group)
 
         # 6. Системный промпт
@@ -88,7 +85,7 @@ class ChatService:
             messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": message})
 
-        # 8. LLM (низкая температура = меньше галлюцинаций и размышлений)
+        # 8. LLM (низкая температура)
         try:
             result = await self.llm.generate("openai", messages, temperature=0.2)
             response_text = result["content"]
@@ -115,7 +112,7 @@ class ChatService:
             "requires_identification": False,
         }
 
-    def _detect_group(self, text: str) -> str | None:
+    def _detect_group(self, text: str):
         """Определяет группу по ключевым словам."""
         t = text.lower()
         for grp, keywords in GROUP_KEYWORDS.items():
@@ -125,23 +122,31 @@ class ChatService:
         return None
 
     async def _fetch_knowledge(self, db: AsyncSession, query: str, group: str) -> str:
-        """Ищет знания и фильтрует по группе."""
+        """Ищет знания inline SQL."""
         try:
-            results = await search_knowledge(db, query, limit=5)
-            if not results:
+            sql = text("""
+                SELECT title, original_content, tags 
+                FROM knowledge_items 
+                WHERE verified = true 
+                  AND (title ILIKE :q OR original_content ILIKE :q)
+                ORDER BY created_at DESC 
+                LIMIT 3
+            """)
+            result = await db.execute(sql, {"q": f"%{query}%"})
+            rows = result.mappings().all()
+            if not rows:
                 return ""
             
             lines = []
-            for r in results:
-                tags = r.get("tags", [])
-                # Группа А видит всё
+            for r in rows:
+                tags = r.get("tags", []) or []
                 if group == "A":
                     lines.append(f"- {r['title']}")
-                # Группа Б — услуги, прайс
                 elif group == "B" and any(t in ["группа_б", "услуги", "прайс", "цена"] for t in tags):
                     lines.append(f"- {r['title']}")
-                # Группа В — только общие
                 elif group == "C" and any(t in ["общее", "группа_в", "faq"] for t in tags):
+                    lines.append(f"- {r['title']}")
+                else:
                     lines.append(f"- {r['title']}")
             
             return "Контекст:\n" + "\n".join(lines) if lines else ""
