@@ -13,6 +13,7 @@ from app.utils.logger import setup_logging
 from app.core.exceptions import BestConsultingException
 from app.api.v1.router import api_router
 from app.db.base import init_db
+from app.db.migrations import run_migrations
 
 logger = setup_logging()
 
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
 
     try:
         await init_db()
+        await run_migrations()  # <-- автомиграция
         logger.info("✅ База данных инициализирована")
     except Exception as e:
         logger.error(f"❌ Ошибка инициализации БД: {e}")
