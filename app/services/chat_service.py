@@ -1,4 +1,4 @@
-"""Chat Service — обработка сообщений с идентификацией группы и RAG."""
+"""Chat Service — обработка сообщений с идентификацией группы, RAG и эскалацией."""
 import time
 import traceback
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,6 +99,48 @@ class ChatService:
                 group = "B"
                 await self.dialog.set_client_group(db, client_id, group)
                 logger.info(f"[Chat] Клиент {client_id} → Группа B (по умолчанию)")
+
+        # === ЭСКАЛАЦИЯ: проверяем сообщение перед ответом ===
+        from app.services.escalation_service import detect_escalation, create_escalation, format_escalation_message
+        
+        needs_esc, reason, priority = detect_escalation(message, group or "B")
+        
+        if needs_esc:
+            await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
+            
+            context = " ".join([h["content"] for h in history[-3:]])
+            esc = await create_escalation(
+                db=db,
+                session_id=session_id,
+                client_id=client_id,
+                channel=channel,
+                trigger_reason=reason,
+                trigger_message=message,
+                context_summary=context[:500],
+                recommendation="Требуется вмешательство руководителя",
+                priority=priority,
+                group=group or "B",
+            )
+            
+            response_text = (
+                "Ваш запрос требует внимания руководителя. "
+                "Информация передана. Ожидайте ответа."
+            )
+            
+            await self.dialog.save_message(
+                db, session_id, client_id, channel, "assistant", response_text,
+                model_used="escalation", tokens_used=0
+            )
+            
+            return {
+                "response": response_text,
+                "model_used": "escalation",
+                "processing_time": round(time.time() - start_time, 3),
+                "session_id": session_id,
+                "group": group,
+                "escalation": True,
+                "escalation_id": esc.id,
+            }
 
         await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
         history = await self.dialog.get_history(db, session_id, limit=10)
