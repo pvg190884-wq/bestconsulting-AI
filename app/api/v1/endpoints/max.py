@@ -1,4 +1,4 @@
-"""MAX Webhook — получение сообщений от MAX."""
+"""MAX Webhook — получение сообщений от @MasterBot."""
 from fastapi import APIRouter, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends
@@ -14,36 +14,36 @@ logger = setup_logging()
 
 @router.post("/webhook")
 async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    """Принимает webhook от MAX."""
-    raw_body = await request.body()
-    logger.info(f"[MAX] Raw body: {raw_body.decode()[:800]}")
-    
+    """Принимает webhook от @MasterBot."""
     try:
         data = await request.json()
     except Exception as e:
         logger.error(f"[MAX] JSON parse error: {e}")
-        return {"ok": False, "error": "invalid json"}
-    
-    logger.info(f"[MAX] Parsed: {str(data)[:500]}")
-    
-    # MAX формат: {"message": {"chat_id": 123, "text": "...", "from": {"id": ...}}}
-    message = data.get("message") or data.get("data", {}).get("message") or data
-    
-    if not isinstance(message, dict):
-        logger.warning(f"[MAX] No message found in: {str(data)[:300]}")
+        return {"ok": False}
+
+    logger.info(f"[MAX] Webhook: {str(data)[:500]}")
+
+    # Формат @MasterBot: {"update_type": "message_created", "message": {...}}
+    if data.get("update_type") != "message_created":
         return {"ok": True}
+
+    message = data.get("message", {})
     
-    # Извлекаем chat_id (число) и текст
-    chat_id = message.get("chat_id") or message.get("chat", {}).get("id") or ""
-    text = message.get("text") or message.get("body") or ""
-    user_id = str(message.get("from_id") or message.get("from", {}).get("id") or chat_id)
-    
-    logger.info(f"[MAX] chat_id={chat_id}, user_id={user_id}, text={text[:100]}")
-    
+    # Не отвечаем ботам — защита от зацикливания
+    if message.get("sender", {}).get("is_bot"):
+        return {"ok": True, "skipped": "bot"}
+
+    # Извлекаем данные
+    chat_id = message.get("recipient", {}).get("chat_id")
+    text = message.get("body", {}).get("text") or message.get("text", "")
+    user_id = str(message.get("sender", {}).get("id") or chat_id)
+
     if not chat_id or not text:
-        logger.warning("[MAX] Missing chat_id or text")
+        logger.warning("[MAX] Нет chat_id или text")
         return {"ok": True}
-    
+
+    logger.info(f"[MAX] Сообщение от {user_id} в чат {chat_id}: {text[:100]}")
+
     # Обрабатываем через ChatService
     service = ChatService()
     result = await service.process_message(db, user_id, "max", text)
@@ -53,16 +53,15 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     ok = await send_max_message(chat_id, response_text)
     
     if not ok:
-        logger.error(f"[MAX] Failed to send response to {chat_id}")
-    
+        logger.error(f"[MAX] Не удалось отправить ответ в чат {chat_id}")
+
     return {"ok": True}
 
 
 @router.get("/test")
 async def max_test():
-    """Тестовый endpoint."""
     return {
         "status": "MAX endpoint works",
         "webhook_url": "POST /api/v1/max/webhook",
-        "note": "MAX должен отправлять сюда webhook-сообщения"
+        "note": "Настрой через @MasterBot"
     }
