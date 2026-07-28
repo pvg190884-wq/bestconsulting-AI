@@ -2,6 +2,7 @@
 Единый ИИ-сотрудник. GPT — основной мозг.
 """
 import time
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -26,10 +27,23 @@ async def lifespan(app: FastAPI):
 
     try:
         await init_db()
-        await run_migrations()  # <-- автомиграция
+        await run_migrations()
         logger.info("✅ База данных инициализирована")
     except Exception as e:
         logger.error(f"❌ Ошибка инициализации БД: {e}")
+
+    # Устанавливаем Telegram webhook
+    if settings.TELEGRAM_BOT_TOKEN:
+        from app.services.telegram_service import set_webhook
+        railway_url = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+        if railway_url:
+            webhook_full = f"https://{railway_url}/api/v1/telegram/webhook"
+            await set_webhook(webhook_full)
+            logger.info(f"✅ Telegram webhook: {webhook_full}")
+        elif settings.TELEGRAM_WEBHOOK_URL:
+            webhook_full = f"{settings.TELEGRAM_WEBHOOK_URL}/api/v1/telegram/webhook"
+            await set_webhook(webhook_full)
+            logger.info(f"✅ Telegram webhook: {webhook_full}")
 
     yield
     logger.info("🛑 BestConsulting AI Core остановлен")
