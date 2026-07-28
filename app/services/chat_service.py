@@ -1,4 +1,4 @@
-"""Chat Service — обработка сообщений с идентификацией группы, RAG и эскалацией."""
+"""Chat Service — обработка сообщений с идентификацией группы и RAG."""
 import time
 import traceback
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,13 +57,14 @@ class ChatService:
         except Exception as e:
             err = traceback.format_exc()
             logger.error(f"[Chat] CRITICAL ERROR: {err}")
+            # Возвращаем ПОЛНЫЙ traceback для диагностики
             return {
                 "response": f"Ошибка: {str(e)[:200]}",
                 "model_used": "error",
                 "processing_time": 0,
                 "session_id": f"{client_id}_{channel}",
                 "group": None,
-                "error_detail": str(e)[:500],
+                "error_detail": err[:1000],  # Полный traceback
             }
 
     async def _process(self, db: AsyncSession, client_id: str, channel: str, message: str) -> dict:
@@ -98,15 +99,13 @@ class ChatService:
                 await self.dialog.set_client_group(db, client_id, group)
                 logger.info(f"[Chat] Клиент {client_id} → Группа B (по умолчанию)")
 
-        # === ПРОВЕРКА: ожидаем контакты для эскалации? ===
+        # Проверка pending escalation
         pending = await self.dialog.get_pending_escalation(db, client_id)
         if pending:
-            # Клиент прислал контакты — сохраняем и создаём эскалацию
             contacts = {"info": message, "provided_at": time.time()}
             await self.dialog.set_client_contacts(db, client_id, contacts)
             await self.dialog.clear_pending_escalation(db, client_id)
             
-            # Контекст из истории (предыдущие сообщения пользователя)
             context_msgs = [h["content"] for h in history[-5:] if h["role"] == "user"]
             context_summary = " | ".join(context_msgs)[:400] if context_msgs else "Запрос через чат-бот"
             
@@ -145,17 +144,15 @@ class ChatService:
                 "escalation_id": esc.id,
             }
 
-        # === ЭСКАЛАЦИЯ: проверяем сообщение ===
+        # Эскалация
         from app.services.escalation_service import detect_escalation, create_escalation, EscalationPriority
         
         needs_esc, reason, priority = detect_escalation(message, group or "B")
         
         if needs_esc:
-            # Проверяем есть ли контакты
             contacts = await self.dialog.get_client_contacts(db, client_id)
             
             if not contacts or not contacts.get("info"):
-                # Нет контактов — сохраняем pending и просим контакты
                 await self.dialog.set_pending_escalation(db, client_id, {
                     "reason": reason,
                     "priority": priority.value,
@@ -181,7 +178,6 @@ class ChatService:
                     "awaiting_contacts": True,
                 }
             
-            # Контакты есть — создаём эскалацию сразу
             context_msgs = [h["content"] for h in history[-5:] if h["role"] == "user"]
             context_summary = " | ".join(context_msgs)[:400] if context_msgs else "Запрос через чат-бот"
             
@@ -219,7 +215,7 @@ class ChatService:
                 "escalation_id": esc.id,
             }
 
-        # === ОБЫЧНЫЙ ДИАЛОГ ===
+        # Обычный диалог
         await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
         history = await self.dialog.get_history(db, session_id, limit=10)
         knowledge_text = await self._fetch_knowledge(db, message, group)
@@ -236,11 +232,11 @@ class ChatService:
         try:
             result = await self.llm.generate("openai", messages, temperature=0.2)
             response_text = result["content"]
-            model_used = "openai"
+            model_used = result.get("model", "openai")
             tokens = result.get("tokens_prompt", 0) + result.get("tokens_completion", 0)
         except Exception as e:
             logger.error(f"[Chat] LLM ошибка: {e}")
-            response_text = "Ошибка сервиса. Попробуйте позже."
+            response_text = f"Ошибка LLM: {str(e)[:200]}"
             model_used = "error"
             tokens = 0
 
