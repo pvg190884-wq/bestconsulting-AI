@@ -3,6 +3,7 @@ from sqlalchemy import text
 from app.db.base import _get_engine, Base
 from app.db.models.knowledge import KnowledgeItem
 from app.utils.logger import setup_logging
+
 logger = setup_logging()
 
 # Колонки, которые обязаны оставаться NOT NULL (без них запись бессмысленна)
@@ -14,7 +15,7 @@ async def run_migrations():
     engine = _get_engine()
     
     async with engine.begin() as conn:
-        # Проверяем, существует ли таблица knowledge_items
+        # === knowledge_items ===
         result = await conn.execute(text("""
             SELECT EXISTS (
                 SELECT FROM information_schema.tables 
@@ -83,3 +84,26 @@ async def run_migrations():
             logger.info(f"[Migration] Колонка '{col}' теперь допускает NULL")
         
         logger.info("[Migration] Таблица knowledge_items проверена и актуальна")
+
+        # === founder_tasks ===
+        result_ft = await conn.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_name = 'founder_tasks'
+            );
+        """))
+        if not result_ft.scalar():
+            logger.info("[Migration] Создаём таблицу founder_tasks")
+            await conn.execute(text("""
+                CREATE TABLE founder_tasks (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    title VARCHAR(500) NOT NULL,
+                    description TEXT,
+                    status VARCHAR(50) DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """))
+            logger.info("[Migration] Таблица founder_tasks создана")
+        else:
+            logger.info("[Migration] Таблица founder_tasks уже существует")
