@@ -1,4 +1,4 @@
-"""MAX Webhook — получение сообщений от @MasterBot."""
+"""MAX Webhook — получение сообщений от MAX."""
 from fastapi import APIRouter, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends
@@ -14,7 +14,7 @@ logger = setup_logging()
 
 @router.post("/webhook")
 async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    """Принимает webhook от @MasterBot."""
+    """Принимает webhook от MAX."""
     try:
         data = await request.json()
     except Exception as e:
@@ -33,10 +33,10 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     if message.get("sender", {}).get("is_bot"):
         return {"ok": True, "skipped": "bot"}
 
-    # Извлекаем данные
+    # ИЗМЕНЕНИЕ: используем user_id как client_id (а не chat_id!)
     chat_id = message.get("recipient", {}).get("chat_id")
     text = message.get("body", {}).get("text") or message.get("text", "")
-    user_id = str(message.get("sender", {}).get("id") or chat_id)
+    user_id = str(message.get("sender", {}).get("user_id") or chat_id)  # ← ГЛАВНЫЙ ФИКС
 
     if not chat_id or not text:
         logger.warning("[MAX] Нет chat_id или text")
@@ -44,7 +44,7 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     logger.info(f"[MAX] Сообщение от {user_id} в чат {chat_id}: {text[:100]}")
 
-    # Обрабатываем через ChatService
+    # Обрабатываем через ChatService (user_id = client_id)
     service = ChatService()
     result = await service.process_message(db, user_id, "max", text)
     
