@@ -18,6 +18,7 @@ class KnowledgeItemCreate(BaseModel):
     content: str
     tags: list[str] = []
     verified: bool = True
+    type: str = "text"  # ← добавлено
 
 
 class KnowledgeBatchUpload(BaseModel):
@@ -28,27 +29,26 @@ class KnowledgeBatchUpload(BaseModel):
 async def save_knowledge(item: KnowledgeItemCreate, db: AsyncSession = Depends(get_db)):
     """Сохранить одну запись в базу знаний."""
     try:
-        # Проверяем, есть ли уже такой title
         check = await db.execute(text("SELECT id FROM knowledge_items WHERE title = :title"), {"title": item.title})
         existing = check.scalar()
         if existing:
-            # Обновляем существующую
             await db.execute(text("""
                 UPDATE knowledge_items 
-                SET original_content = :content, tags = :tags, verified = :verified, created_at = NOW()
+                SET original_content = :content, tags = :tags, verified = :verified, type = :type, created_at = NOW()
                 WHERE title = :title
             """), {
                 "title": item.title,
                 "content": item.content,
                 "tags": json.dumps(item.tags),
                 "verified": item.verified,
+                "type": item.type,
             })
             await db.commit()
             return {"success": True, "id": str(existing), "title": item.title, "updated": True}
 
         sql = text("""
-            INSERT INTO knowledge_items (id, title, original_content, tags, verified, created_at)
-            VALUES (gen_random_uuid(), :title, :content, :tags, :verified, NOW())
+            INSERT INTO knowledge_items (id, title, original_content, tags, verified, type, created_at)
+            VALUES (gen_random_uuid(), :title, :content, :tags, :verified, :type, NOW())
             RETURNING id
         """)
         result = await db.execute(sql, {
@@ -56,6 +56,7 @@ async def save_knowledge(item: KnowledgeItemCreate, db: AsyncSession = Depends(g
             "content": item.content,
             "tags": json.dumps(item.tags),
             "verified": item.verified,
+            "type": item.type,
         })
         await db.commit()
         new_id = result.scalar()
@@ -75,32 +76,31 @@ async def upload_batch(data: KnowledgeBatchUpload, db: AsyncSession = Depends(ge
     
     for idx, item in enumerate(data.items):
         try:
-            # Проверяем дубль по title
             check = await db.execute(text("SELECT id FROM knowledge_items WHERE title = :title"), {"title": item.title})
             existing = check.scalar()
             
             if existing:
-                # Обновляем
                 await db.execute(text("""
                     UPDATE knowledge_items 
-                    SET original_content = :content, tags = :tags, verified = :verified, created_at = NOW()
+                    SET original_content = :content, tags = :tags, verified = :verified, type = :type, created_at = NOW()
                     WHERE title = :title
                 """), {
                     "title": item.title,
                     "content": item.content,
                     "tags": json.dumps(item.tags),
                     "verified": item.verified,
+                    "type": item.type,
                 })
             else:
-                # Вставляем новую
                 await db.execute(text("""
-                    INSERT INTO knowledge_items (id, title, original_content, tags, verified, created_at)
-                    VALUES (gen_random_uuid(), :title, :content, :tags, :verified, NOW())
+                    INSERT INTO knowledge_items (id, title, original_content, tags, verified, type, created_at)
+                    VALUES (gen_random_uuid(), :title, :content, :tags, :verified, :type, NOW())
                 """), {
                     "title": item.title,
                     "content": item.content,
                     "tags": json.dumps(item.tags),
                     "verified": item.verified,
+                    "type": item.type,
                 })
             
             await db.commit()
