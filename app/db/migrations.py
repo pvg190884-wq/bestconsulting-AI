@@ -4,6 +4,11 @@ from app.db.base import _get_engine, Base
 from app.db.models.knowledge import KnowledgeItem
 from app.utils.logger import setup_logging
 logger = setup_logging()
+
+# Колонки, которые обязаны оставаться NOT NULL (без них запись бессмысленна)
+REQUIRED_NOT_NULL = {"id", "title", "original_content", "created_at"}
+
+
 async def run_migrations():
     """Проверяет и исправляет схему БД без ручного вмешательства."""
     engine = _get_engine()
@@ -58,21 +63,23 @@ async def run_migrations():
             ))
             logger.info("[Migration] Колонка type успешно переведена в varchar")
         
-        # Проверяем, разрешён ли NULL в колонке code_data
+        # Универсальная проверка: снимаем NOT NULL со всех колонок, кроме обязательных
         result4 = await conn.execute(text("""
-            SELECT is_nullable 
+            SELECT column_name 
             FROM information_schema.columns 
             WHERE table_schema = 'public'
               AND table_name = 'knowledge_items'
-              AND column_name = 'code_data';
+              AND is_nullable = 'NO';
         """))
-        code_data_nullable = result4.scalar()
+        not_null_columns = [row[0] for row in result4.fetchall()]
         
-        if code_data_nullable == 'NO':
-            logger.warning("[Migration] Колонка code_data имеет NOT NULL — разрешаем NULL")
+        for col in not_null_columns:
+            if col in REQUIRED_NOT_NULL:
+                continue
+            logger.warning(f"[Migration] Колонка '{col}' имеет NOT NULL — разрешаем NULL")
             await conn.execute(text(
-                "ALTER TABLE knowledge_items ALTER COLUMN code_data DROP NOT NULL;"
+                f'ALTER TABLE knowledge_items ALTER COLUMN "{col}" DROP NOT NULL;'
             ))
-            logger.info("[Migration] Колонка code_data теперь допускает NULL")
+            logger.info(f"[Migration] Колонка '{col}' теперь допускает NULL")
         
         logger.info("[Migration] Таблица knowledge_items проверена и актуальна")
