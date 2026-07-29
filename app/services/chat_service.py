@@ -455,4 +455,93 @@ class ChatService:
             "Ответьте 'да' для сохранения или уточните детали."
         )
         await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
-        await self.dialog.save_message(db, session_id
+        await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+        
+        return {
+            "response": response_text,
+            "model_used": "system",
+            "processing_time": round(time.time() - start_time, 3),
+            "session_id": session_id,
+            "group": "A",
+            "awaiting_verification": True,
+        }
+
+    def _detect_group(self, text: str):
+        t = text.lower()
+        for org in GROUP_A_ORGS:
+            if org in t:
+                return "A"
+        for grp, keywords in GROUP_KEYWORDS.items():
+            for kw in keywords:
+                if kw in t:
+                    return grp
+        return None
+
+    async def _detect_group_advanced(self, db: AsyncSession, text: str) -> str:
+        t = text.lower()
+        for org in GROUP_A_ORGS:
+            if org in t:
+                return "A"
+        for kw in GROUP_KEYWORDS["C"]:
+            if kw in t:
+                return "C"
+        for kw in GROUP_KEYWORDS["B"]:
+            if kw in t:
+                return "B"
+        try:
+            sql = text("""
+                SELECT title, tags 
+                FROM knowledge_items 
+                WHERE verified = true 
+                  AND tags @> '["группа_а"]'
+                  AND (title ILIKE :q OR original_content ILIKE :q)
+                LIMIT 1
+            """)
+            result = await db.execute(sql, {"q": f"%{text[:50]}%"})
+            row = result.mappings().first()
+            if row:
+                return "A"
+        except Exception as e:
+            logger.warning(f"[Chat] Поиск организации: {e}")
+        return None
+
+    async def _fetch_knowledge(self, db: AsyncSession, query: str, group: str) -> str:
+        try:
+            group_tag = f"группа_{group.lower()}" if group else ""
+            
+            if group_tag:
+                sql = text("""
+                    SELECT title, original_content, tags 
+                    FROM knowledge_items 
+                    WHERE verified = true 
+                      AND (title ILIKE :q OR original_content ILIKE :q)
+                    ORDER BY 
+                        CASE WHEN tags @> :group_tag_json THEN 0 ELSE 1 END,
+                        created_at DESC 
+                    LIMIT 3
+                """)
+                result = await db.execute(sql, {"q": f"%{query}%", "group_tag_json": json.dumps([group_tag])})
+            else:
+                sql = text("""
+                    SELECT title, original_content, tags 
+                    FROM knowledge_items 
+                    WHERE verified = true 
+                      AND (title ILIKE :q OR original_content ILIKE :q)
+                    ORDER BY created_at DESC 
+                    LIMIT 3
+                """)
+                result = await db.execute(sql, {"q": f"%{query}%"})
+            
+            rows = result.mappings().all()
+            if not rows:
+                return ""
+            
+            parts = []
+            for r in rows:
+                content = r.get('original_content', '') or ''
+                parts.append(f"=== {r['title']} ===\n{content[:1000]}")
+            
+            return "\n\n".join(parts) if parts else ""
+        except Exception as e:
+            logger.warning(f"[Chat] Поиск знаний: {e}")
+            return ""
