@@ -62,6 +62,10 @@ class ChatService:
         except Exception as e:
             err = traceback.format_exc()
             logger.error(f"[Chat] CRITICAL ERROR: {err}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             return {
                 "response": f"Ошибка: {str(e)[:200]}",
                 "model_used": "error",
