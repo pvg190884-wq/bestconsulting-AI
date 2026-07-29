@@ -306,7 +306,7 @@ class ChatService:
 
             if cmd == "/отчет":
                 stats = await self.founder.get_stats(db)
-                text = (
+                report_text = (
                     f"📊 Отчёт ({stats.get('timestamp', 'сейчас')}):\n"
                     f"• Всего контактов: {stats.get('total_clients', 0)}\n"
                     f"• По группам: {stats.get('by_group', {})}\n"
@@ -314,7 +314,7 @@ class ChatService:
                     f"• Эскалаций за неделю: {stats.get('escalations_week', 0)}\n"
                     f"• Записей в базе знаний: {stats.get('knowledge_items', 0)}"
                 )
-                return {"response": text, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+                return {"response": report_text, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
 
             if cmd == "/база":
                 if not arg:
@@ -378,13 +378,14 @@ class ChatService:
                     for row in rows:
                         extra = row.get("extra_data") or "{}"
                         try:
-                            ed = json.loads(extra)
+                            ed = json.loads(extra) if isinstance(extra, str) else extra
                             name = ed.get("name", "—")
-                        except:
+                        except Exception:
                             name = "—"
                         lines.append(f"• {name} | {row['client_id']} | {row['channel']} | Группа: {row['client_group'] or '—'}")
                     return {"response": "\n".join(lines), "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
                 except Exception as e:
+                    await db.rollback()
                     return {"response": f"❌ Ошибка: {e}", "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
 
             if cmd == "/очистить":
@@ -459,8 +460,8 @@ class ChatService:
                             WHERE id = :kid
                         """), {"kid": res["id"]})
                         await db.commit()
-                    except:
-                        pass
+                    except Exception:
+                        await db.rollback()
                     
                     return {
                         "response": f"✅ Документ верифицирован и сохранён (ID: {res['id']}). Версия: v1. Дата: {datetime.now().strftime('%Y-%m-%d')}.",
@@ -504,8 +505,8 @@ class ChatService:
                     return grp
         return None
 
-    async def _detect_group_advanced(self, db: AsyncSession, text: str) -> str:
-        t = text.lower()
+    async def _detect_group_advanced(self, db: AsyncSession, message_text: str) -> str:
+        t = message_text.lower()
         for org in GROUP_A_ORGS:
             if org in t:
                 return "A"
@@ -524,12 +525,13 @@ class ChatService:
                   AND (title ILIKE :q OR original_content ILIKE :q)
                 LIMIT 1
             """)
-            result = await db.execute(sql, {"q": f"%{text[:50]}%"})
+            result = await db.execute(sql, {"q": f"%{message_text[:50]}%"})
             row = result.mappings().first()
             if row:
                 return "A"
         except Exception as e:
             logger.warning(f"[Chat] Поиск организации: {e}")
+            await db.rollback()
         return None
 
     async def _fetch_knowledge(self, db: AsyncSession, query: str, group: str) -> str:
@@ -571,4 +573,5 @@ class ChatService:
             return "\n\n".join(parts) if parts else ""
         except Exception as e:
             logger.warning(f"[Chat] Поиск знаний: {e}")
+            await db.rollback()
             return ""
