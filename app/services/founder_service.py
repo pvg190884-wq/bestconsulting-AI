@@ -10,7 +10,7 @@ from app.utils.logger import setup_logging
 logger = setup_logging()
 
 FOUNDER_TELEGRAM_ID = "5718678440"
-FOUNDER_MAX_ID = ""  # ← Заполни, когда узнаешь ID в MAX
+FOUNDER_MAX_ID = "111620312"  # ← ВЗЯТ ИЗ ЛОГОВ MAX (sender.user_id)
 
 
 class FounderService:
@@ -23,7 +23,7 @@ class FounderService:
         cid = str(client_id)
         if channel == "telegram" and cid == self.founder_id:
             return True
-        if channel == "max" and cid == self.founder_max_id and self.founder_max_id:
+        if channel == "max" and cid == self.founder_max_id:
             return True
         return False
 
@@ -68,7 +68,7 @@ class FounderService:
                 "timestamp": datetime.now().isoformat(),
             }
         except Exception as e:
-            await db.rollback()  # ← ГЛАВНЫЙ ФИКС
+            await db.rollback()  # ← ФИКС: откат транзакции при ошибке
             logger.error(f"[FOUNDER] Ошибка статистики: {e}")
             return {}
 
