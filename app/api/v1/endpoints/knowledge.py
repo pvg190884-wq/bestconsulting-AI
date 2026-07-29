@@ -28,6 +28,24 @@ class KnowledgeBatchUpload(BaseModel):
 async def save_knowledge(item: KnowledgeItemCreate, db: AsyncSession = Depends(get_db)):
     """Сохранить одну запись в базу знаний."""
     try:
+        # Проверяем, есть ли уже такой title
+        check = await db.execute(text("SELECT id FROM knowledge_items WHERE title = :title"), {"title": item.title})
+        existing = check.scalar()
+        if existing:
+            # Обновляем существующую
+            await db.execute(text("""
+                UPDATE knowledge_items 
+                SET original_content = :content, tags = :tags, verified = :verified, created_at = NOW()
+                WHERE title = :title
+            """), {
+                "title": item.title,
+                "content": item.content,
+                "tags": json.dumps(item.tags),
+                "verified": item.verified,
+            })
+            await db.commit()
+            return {"success": True, "id": str(existing), "title": item.title, "updated": True}
+
         sql = text("""
             INSERT INTO knowledge_items (id, title, original_content, tags, verified, created_at)
             VALUES (gen_random_uuid(), :title, :content, :tags, :verified, NOW())
@@ -36,7 +54,7 @@ async def save_knowledge(item: KnowledgeItemCreate, db: AsyncSession = Depends(g
         result = await db.execute(sql, {
             "title": item.title,
             "content": item.content,
-            "tags": json.dumps(item.tags),  # ← JSONB
+            "tags": json.dumps(item.tags),
             "verified": item.verified,
         })
         await db.commit()
@@ -57,27 +75,41 @@ async def upload_batch(data: KnowledgeBatchUpload, db: AsyncSession = Depends(ge
     
     for idx, item in enumerate(data.items):
         try:
-            sql = text("""
-                INSERT INTO knowledge_items (id, title, original_content, tags, verified, created_at)
-                VALUES (gen_random_uuid(), :title, :content, :tags, :verified, NOW())
-                ON CONFLICT (title) DO UPDATE SET
-                    original_content = EXCLUDED.original_content,
-                    tags = EXCLUDED.tags,
-                    verified = EXCLUDED.verified,
-                    created_at = NOW()
-            """)
-            await db.execute(sql, {
-                "title": item.title,
-                "content": item.content,
-                "tags": json.dumps(item.tags),  # ← JSONB
-                "verified": item.verified,
-            })
+            # Проверяем дубль по title
+            check = await db.execute(text("SELECT id FROM knowledge_items WHERE title = :title"), {"title": item.title})
+            existing = check.scalar()
+            
+            if existing:
+                # Обновляем
+                await db.execute(text("""
+                    UPDATE knowledge_items 
+                    SET original_content = :content, tags = :tags, verified = :verified, created_at = NOW()
+                    WHERE title = :title
+                """), {
+                    "title": item.title,
+                    "content": item.content,
+                    "tags": json.dumps(item.tags),
+                    "verified": item.verified,
+                })
+            else:
+                # Вставляем новую
+                await db.execute(text("""
+                    INSERT INTO knowledge_items (id, title, original_content, tags, verified, created_at)
+                    VALUES (gen_random_uuid(), :title, :content, :tags, :verified, NOW())
+                """), {
+                    "title": item.title,
+                    "content": item.content,
+                    "tags": json.dumps(item.tags),
+                    "verified": item.verified,
+                })
+            
+            await db.commit()
             imported += 1
         except Exception as e:
+            await db.rollback()
             errors.append({"index": idx, "title": item.title, "error": str(e)[:200]})
             logger.error(f"[KB] Ошибка в batch [{idx}] {item.title}: {e}")
     
-    await db.commit()
     logger.info(f"[KB] Batch загружено: {imported}/{len(data.items)}")
     
     return {
