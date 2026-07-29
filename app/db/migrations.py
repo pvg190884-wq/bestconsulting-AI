@@ -20,7 +20,6 @@ async def run_migrations():
         table_exists = result.scalar()
         
         if not table_exists:
-            # Таблицы нет — создадим при обычном init_db
             logger.info("[Migration] Таблица knowledge_items не найдена, будет создана автоматически")
             return
         
@@ -36,14 +35,13 @@ async def run_migrations():
         has_code_data = result2.scalar()
         
         if not has_code_data:
-            # Старая схема — пересоздаём таблицу
             logger.warning("[Migration] Обнаружена старая схема knowledge_items — пересоздание")
             await conn.execute(text("DROP TABLE knowledge_items CASCADE;"))
             await conn.run_sync(Base.metadata.create_all, tables=[KnowledgeItem.__table__])
             logger.info("[Migration] Таблица knowledge_items пересоздана с новой схемой")
-            return  # После пересоздания колонка type уже varchar по модели — дальше проверять не нужно
+            return
         
-        # Схема актуальна по code_data — отдельно проверяем тип колонки 'type'
+        # Проверяем тип колонки 'type' (enum -> varchar)
         result3 = await conn.execute(text("""
             SELECT udt_name 
             FROM information_schema.columns 
@@ -54,11 +52,27 @@ async def run_migrations():
         type_udt = result3.scalar()
         
         if type_udt and type_udt != 'varchar':
-            # Колонка type всё ещё enum — конвертируем в varchar
             logger.warning(f"[Migration] Колонка type имеет тип '{type_udt}' (enum) — конвертация в varchar")
             await conn.execute(text(
                 "ALTER TABLE knowledge_items ALTER COLUMN type TYPE varchar USING type::text;"
             ))
             logger.info("[Migration] Колонка type успешно переведена в varchar")
-        else:
-            logger.info("[Migration] Таблица knowledge_items актуальна")
+        
+        # Проверяем, разрешён ли NULL в колонке code_data
+        result4 = await conn.execute(text("""
+            SELECT is_nullable 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public'
+              AND table_name = 'knowledge_items'
+              AND column_name = 'code_data';
+        """))
+        code_data_nullable = result4.scalar()
+        
+        if code_data_nullable == 'NO':
+            logger.warning("[Migration] Колонка code_data имеет NOT NULL — разрешаем NULL")
+            await conn.execute(text(
+                "ALTER TABLE knowledge_items ALTER COLUMN code_data DROP NOT NULL;"
+            ))
+            logger.info("[Migration] Колонка code_data теперь допускает NULL")
+        
+        logger.info("[Migration] Таблица knowledge_items проверена и актуальна")
