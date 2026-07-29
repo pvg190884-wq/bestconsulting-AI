@@ -1,4 +1,5 @@
 """Knowledge Base API — управление базой знаний."""
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -35,7 +36,7 @@ async def save_knowledge(item: KnowledgeItemCreate, db: AsyncSession = Depends(g
         result = await db.execute(sql, {
             "title": item.title,
             "content": item.content,
-            "tags": item.tags,
+            "tags": json.dumps(item.tags),  # ← JSONB
             "verified": item.verified,
         })
         await db.commit()
@@ -68,12 +69,12 @@ async def upload_batch(data: KnowledgeBatchUpload, db: AsyncSession = Depends(ge
             await db.execute(sql, {
                 "title": item.title,
                 "content": item.content,
-                "tags": item.tags,
+                "tags": json.dumps(item.tags),  # ← JSONB
                 "verified": item.verified,
             })
             imported += 1
         except Exception as e:
-            errors.append({"index": idx, "title": item.title, "error": str(e)[:100]})
+            errors.append({"index": idx, "title": item.title, "error": str(e)[:200]})
             logger.error(f"[KB] Ошибка в batch [{idx}] {item.title}: {e}")
     
     await db.commit()
@@ -99,13 +100,13 @@ async def search_knowledge(q: str, group: str = "", limit: int = 3, db: AsyncSes
                 WHERE verified = true 
                   AND (title ILIKE :q OR original_content ILIKE :q)
                 ORDER BY 
-                    CASE WHEN :group_tag = ANY(tags) THEN 0 ELSE 1 END,
+                    CASE WHEN tags @> :group_tag_json THEN 0 ELSE 1 END,
                     created_at DESC 
                 LIMIT :limit
             """)
             result = await db.execute(sql, {
                 "q": f"%{q}%",
-                "group_tag": group_tag,
+                "group_tag_json": json.dumps([group_tag]),
                 "limit": limit,
             })
         else:
@@ -122,10 +123,16 @@ async def search_knowledge(q: str, group: str = "", limit: int = 3, db: AsyncSes
         rows = result.mappings().all()
         items = []
         for r in rows:
+            tags = r["tags"]
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                except:
+                    tags = []
             items.append({
                 "title": r["title"],
                 "content": r["original_content"][:500],
-                "tags": r["tags"],
+                "tags": tags,
             })
         
         return {"query": q, "group": group, "count": len(items), "items": items}
@@ -142,12 +149,12 @@ async def list_knowledge(group: str = "", limit: int = 50, db: AsyncSession = De
             sql = text("""
                 SELECT id, title, tags, verified, created_at 
                 FROM knowledge_items 
-                WHERE :group_tag = ANY(tags)
+                WHERE tags @> :group_tag_json
                 ORDER BY created_at DESC 
                 LIMIT :limit
             """)
             result = await db.execute(sql, {
-                "group_tag": f"группа_{group.lower()}",
+                "group_tag_json": json.dumps([f"группа_{group.lower()}"]),
                 "limit": limit,
             })
         else:
