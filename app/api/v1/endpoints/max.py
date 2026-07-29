@@ -13,7 +13,6 @@ router = APIRouter()
 
 # Синглтон ChatService — не создаём на каждый запрос
 _chat_service = None
-
 def _get_chat_service() -> ChatService:
     global _chat_service
     if _chat_service is None:
@@ -21,27 +20,31 @@ def _get_chat_service() -> ChatService:
     return _chat_service
 
 
-# URL отправки сообщений в МАХ (при необходимости замените на актуальный из документации)
-MAX_SEND_URL = "https://api.max.ru/v1/messages/send"
+MAX_API_HOST = "https://platform-api2.max.ru"
 
 
-async def send_max_message(user_id: str, text: str) -> bool:
-    """Отправляет текстовое сообщение пользователю в МАХ."""
-    if not text or not user_id:
+async def send_max_message(chat_id, text: str) -> bool:
+    """Отправляет текстовое сообщение в чат МАХ по chat_id."""
+    if not text or not chat_id:
         return False
     try:
-        headers = {
-            "Authorization": f"Bearer {settings.MAX_API_TOKEN}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "user_id": user_id,
-            "text": text[:4000],  # ограничение МАХ
-        }
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(MAX_SEND_URL, headers=headers, json=payload)
+        cid = int(chat_id)
+    except (ValueError, TypeError):
+        logger.error(f"[MAX] Неверный chat_id: {chat_id}")
+        return False
+
+    url = f"{MAX_API_HOST}/messages?chat_id={cid}"
+    payload = {"text": text[:4000]}  # ограничение МАХ
+    headers = {
+        "Authorization": settings.MAX_API_TOKEN,
+        "Content-Type": "application/json",
+    }
+    try:
+        # verify=False — обход сертификата Минцифры
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            r = await client.post(url, headers=headers, json=payload)
             if r.status_code == 200:
-                logger.info(f"[MAX] Сообщение отправлено {user_id}")
+                logger.info(f"[MAX] Сообщение отправлено в чат {cid}")
                 return True
             else:
                 logger.error(f"[MAX] Ошибка {r.status_code}: {r.text[:200]}")
@@ -58,42 +61,54 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         data = await request.json()
         logger.debug(f"[MAX] Raw webhook: {data}")
 
-        # --- Извлечение ID пользователя ---
-        user_id = str(
-            data.get("user_id")
+        # Реальный формат МАХ: {"update_type": "message_created", "message": {...}}
+        message = data.get("message", {}) if isinstance(data, dict) else {}
+
+        # Не отвечаем ботам — защита от зацикливания
+        if message.get("sender", {}).get("is_bot"):
+            return {"ok": True, "skipped": "bot"}
+
+        # --- Извлечение ID отправителя (для памяти/группы клиента) ---
+        sender_id = str(
+            message.get("sender", {}).get("id")
+            or data.get("user_id")
             or data.get("from", {}).get("id")
-            or data.get("sender", {}).get("id")
-            or data.get("chat", {}).get("id")
             or ""
         ).strip()
 
+        # --- Извлечение chat_id (куда отправлять ответ) ---
+        chat_id = (
+            message.get("recipient", {}).get("chat_id")
+            or data.get("chat", {}).get("id")
+            or sender_id
+        )
+
         # --- Извлечение текста ---
         message_text = (
-            data.get("text")
-            or data.get("message", {}).get("text")
+            message.get("body", {}).get("text")
+            or data.get("text")
             or data.get("body")
             or ""
         ).strip()
 
-        if not user_id:
-            logger.warning("[MAX] Нет user_id в webhook")
+        if not sender_id or not chat_id:
+            logger.warning(f"[MAX] Нет sender_id/chat_id в webhook: {data}")
             return {"ok": True}
 
         if not message_text:
             return {"ok": True}
 
-        logger.info(f"[MAX] Входящее от {user_id}: {message_text[:100]}...")
+        logger.info(f"[MAX] Входящее от {sender_id} (chat {chat_id}): {message_text[:100]}...")
 
         # --- Обработка через единый мозг ---
         service = _get_chat_service()
-        result = await service.process_message(db, user_id, "max", message_text)
+        result = await service.process_message(db, sender_id, "max", message_text)
 
         # --- Отправка ответа обратно в МАХ ---
         if isinstance(result, dict) and result.get("response"):
-            await send_max_message(user_id, result["response"])
+            await send_max_message(chat_id, result["response"])
 
         return {"ok": True}
-
     except Exception as e:
         err = traceback.format_exc()
         logger.error(f"[MAX] Критическая ошибка webhook: {err}")
