@@ -14,7 +14,6 @@ async def send_message(chat_id: int, text: str):
     payload = {
         "chat_id": chat_id,
         "text": text,
-        # parse_mode убран — вызывал 400 Bad Request на текстах с <class...>
     }
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
