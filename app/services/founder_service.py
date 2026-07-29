@@ -10,7 +10,7 @@ from app.utils.logger import setup_logging
 logger = setup_logging()
 
 FOUNDER_TELEGRAM_ID = "5718678440"
-FOUNDER_MAX_ID = ""  # ← Заполни, когда узнаешь свой ID в MAX
+FOUNDER_MAX_ID = ""  # ← Заполни, когда узнаешь ID в MAX
 
 
 class FounderService:
@@ -20,12 +20,12 @@ class FounderService:
 
     def is_founder(self, client_id: str, channel: str) -> bool:
         """Проверяет, является ли клиент основателем."""
-        cid = str(client_id)  # ← Главное исправление: приводим к строке
+        cid = str(client_id)
         if channel == "telegram" and cid == self.founder_id:
             return True
         if channel == "max" and cid == self.founder_max_id and self.founder_max_id:
             return True
-        return True if cid == self.founder_id else False  # Fallback на всякий случай
+        return False
 
     async def create_task(self, db: AsyncSession, title: str, description: str) -> dict:
         try:
@@ -46,14 +46,19 @@ class FounderService:
         try:
             r1 = await db.execute(text("SELECT COUNT(*) FROM clients"))
             total_clients = r1.scalar()
+
             r2 = await db.execute(text("SELECT client_group, COUNT(*) FROM clients GROUP BY client_group"))
             by_group = {row[0] or "unknown": row[1] for row in r2.fetchall()}
+
             r3 = await db.execute(text("SELECT channel, COUNT(*) FROM clients GROUP BY channel"))
             by_channel = {row[0] or "unknown": row[1] for row in r3.fetchall()}
+
             r4 = await db.execute(text("SELECT COUNT(*) FROM escalations WHERE created_at > NOW() - INTERVAL '7 days'"))
             escalations_week = r4.scalar()
+
             r5 = await db.execute(text("SELECT COUNT(*) FROM knowledge_items"))
             kb_count = r5.scalar()
+
             return {
                 "total_clients": total_clients,
                 "by_group": by_group,
@@ -63,6 +68,8 @@ class FounderService:
                 "timestamp": datetime.now().isoformat(),
             }
         except Exception as e:
+            await db.rollback()  # ← ГЛАВНЫЙ ФИКС
+            logger.error(f"[FOUNDER] Ошибка статистики: {e}")
             return {}
 
     async def save_founder_knowledge(self, db: AsyncSession, content: str, title: str = None) -> dict:
