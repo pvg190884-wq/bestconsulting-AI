@@ -3,10 +3,7 @@ from sqlalchemy import text
 from app.db.base import _get_engine, Base
 from app.db.models.knowledge import KnowledgeItem
 from app.utils.logger import setup_logging
-
 logger = setup_logging()
-
-
 async def run_migrations():
     """Проверяет и исправляет схему БД без ручного вмешательства."""
     engine = _get_engine()
@@ -38,12 +35,30 @@ async def run_migrations():
         """))
         has_code_data = result2.scalar()
         
-        if has_code_data:
-            logger.info("[Migration] Таблица knowledge_items актуальна")
-            return
+        if not has_code_data:
+            # Старая схема — пересоздаём таблицу
+            logger.warning("[Migration] Обнаружена старая схема knowledge_items — пересоздание")
+            await conn.execute(text("DROP TABLE knowledge_items CASCADE;"))
+            await conn.run_sync(Base.metadata.create_all, tables=[KnowledgeItem.__table__])
+            logger.info("[Migration] Таблица knowledge_items пересоздана с новой схемой")
+            return  # После пересоздания колонка type уже varchar по модели — дальше проверять не нужно
         
-        # Старая схема — пересоздаём таблицу
-        logger.warning("[Migration] Обнаружена старая схема knowledge_items — пересоздание")
-        await conn.execute(text("DROP TABLE knowledge_items CASCADE;"))
-        await conn.run_sync(Base.metadata.create_all, tables=[KnowledgeItem.__table__])
-        logger.info("[Migration] Таблица knowledge_items пересоздана с новой схемой")
+        # Схема актуальна по code_data — отдельно проверяем тип колонки 'type'
+        result3 = await conn.execute(text("""
+            SELECT udt_name 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public'
+              AND table_name = 'knowledge_items'
+              AND column_name = 'type';
+        """))
+        type_udt = result3.scalar()
+        
+        if type_udt and type_udt != 'varchar':
+            # Колонка type всё ещё enum — конвертируем в varchar
+            logger.warning(f"[Migration] Колонка type имеет тип '{type_udt}' (enum) — конвертация в varchar")
+            await conn.execute(text(
+                "ALTER TABLE knowledge_items ALTER COLUMN type TYPE varchar USING type::text;"
+            ))
+            logger.info("[Migration] Колонка type успешно переведена в varchar")
+        else:
+            logger.info("[Migration] Таблица knowledge_items актуальна")
