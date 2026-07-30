@@ -59,7 +59,54 @@ async def _download_max_attachment(url: str) -> bytes:
         r = await client.get(url)
         r.raise_for_status()
         return r.content
+async def send_max_document(chat_id, file_bytes: bytes, filename: str) -> bool:
+    """Отправляет файл в MAX: получение upload-URL → загрузка → отправка сообщения с вложением."""
+    try:
+        cid = int(chat_id)
+    except (ValueError, TypeError):
+        logger.error(f"[MAX] Неверный chat_id для файла: {chat_id}")
+        return False
 
+    headers = {"Authorization": settings.MAX_API_TOKEN}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+            # 1. Получаем временный upload-URL
+            r1 = await client.get(f"{MAX_API_HOST}/uploads", params={"type": "file"}, headers=headers)
+            r1.raise_for_status()
+            upload_url = r1.json().get("url")
+            if not upload_url:
+                logger.error(f"[MAX] Не удалось получить upload-URL: {r1.text[:200]}")
+                return False
+
+            # 2. Загружаем файл на полученный URL
+            files = {"data": (filename, file_bytes)}
+            r2 = await client.post(upload_url, files=files)
+            r2.raise_for_status()
+            upload_result = r2.json()
+            token = upload_result.get("token") or (upload_result.get("photos", {}) or {}).get("token")
+            if not token:
+                logger.error(f"[MAX] Не удалось получить token загрузки: {r2.text[:300]}")
+                return False
+
+            # 3. Отправляем сообщение с вложением
+            payload = {
+                "attachments": [{"type": "file", "payload": {"token": token}}]
+            }
+            r3 = await client.post(
+                f"{MAX_API_HOST}/messages?chat_id={cid}",
+                headers={**headers, "Content-Type": "application/json"},
+                json=payload,
+            )
+            if r3.status_code == 200:
+                logger.info(f"[MAX] Файл {filename} отправлен в чат {cid}")
+                return True
+            else:
+                logger.error(f"[MAX] Ошибка отправки файла: {r3.status_code} {r3.text[:200]}")
+                return False
+    except Exception as e:
+        logger.error(f"[MAX] Ошибка отправки файла: {e}")
+        return False
 
 @router.post("/webhook")
 async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
