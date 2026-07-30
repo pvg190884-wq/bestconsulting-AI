@@ -27,3 +27,4 @@ python-pptx==1.0.2
 # sentry-sdk[fastapi]==2.19.0
 # Utils
 python-dotenv==1.0.0
+fpdf2==2.8.7
