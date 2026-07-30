@@ -82,6 +82,32 @@ class DialogManager:
             flag_modified(client, "extra_data")
             await db.commit()
 
+    async def get_pending_document(self, db: AsyncSession, client_id: str) -> dict | None:
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client and client.extra_data:
+            return client.extra_data.get("pending_document")
+        return None
+
+    async def set_pending_document(self, db: AsyncSession, client_id: str, data: dict):
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client:
+            if not client.extra_data:
+                client.extra_data = {}
+            client.extra_data["pending_document"] = data
+            flag_modified(client, "extra_data")
+            await db.commit()
+            logger.info(f"[Dialog] Ожидающий документ сохранён для {client_id}")
+
+    async def clear_pending_document(self, db: AsyncSession, client_id: str):
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client and client.extra_data:
+            client.extra_data.pop("pending_document", None)
+            flag_modified(client, "extra_data")
+            await db.commit()
+
     async def get_history(self, db: AsyncSession, session_id: str, limit: int = 20) -> list[dict]:
         result = await db.execute(
             select(ChatMessage)
