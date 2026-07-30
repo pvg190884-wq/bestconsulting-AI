@@ -1,33 +1,29 @@
 # === BestConsulting AI Core v2.2 — Dependencies ===
-
 # Web Framework
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 python-multipart==0.0.17
-
 # Configuration
 pydantic==2.9.0
 pydantic-settings==2.6.0
-
 # HTTP Client
 httpx==0.27.0
 aiohttp==3.11.0
-
 # Database
 sqlalchemy[asyncio]==2.0.36
 alembic==1.14.0
 asyncpg==0.30.0
 aiosqlite==0.20.0
 greenlet==3.0.3
-
 # AI / LLM (v2.2)
 openai==1.55.0
-
+# File extraction (v2.7 — remember/knowledge upload)
+pdfplumber==0.11.4
+openpyxl==3.1.5
+python-pptx==1.0.2
 # Cache (v2.3+)
 # redis==5.2.0
-
 # Monitoring (v3.0+)
 # sentry-sdk[fastapi]==2.19.0
-
 # Utils
 python-dotenv==1.0.0
