@@ -68,3 +68,24 @@ async def delete_webhook():
             logger.info("[TG] Webhook удалён")
     except Exception as e:
         logger.error(f"[TG] Ошибка удаления webhook: {e}")
+async def send_document(chat_id: int, file_bytes: bytes, filename: str, caption: str = None):
+    """Отправляет файл (документ) в Telegram через sendDocument."""
+    import httpx as _httpx
+    url = f"{TELEGRAM_API}{settings.TELEGRAM_BOT_TOKEN}/sendDocument"
+    files = {"document": (filename, file_bytes)}
+    data = {"chat_id": str(chat_id)}
+    if caption:
+        data["caption"] = caption[:1024]
+    try:
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, data=data, files=files)
+            resp = r.json()
+            if resp.get("ok"):
+                logger.info(f"[TG] Файл {filename} отправлен в чат {chat_id}")
+                return True
+            else:
+                logger.error(f"[TG] Ошибка отправки файла: {resp}")
+                return False
+    except Exception as e:
+        logger.error(f"[TG] Ошибка отправки файла: {e}")
+        return False
