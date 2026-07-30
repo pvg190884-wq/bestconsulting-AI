@@ -29,6 +29,18 @@ REMEMBER_TRIGGERS = [
     "добавь в базу знаний", "зафиксируй в базе", "запиши в базу",
 ]
 
+WHO_AM_I_PHRASES = [
+    "кто я", "ты знаешь кто я", "как меня зовут", "кто я такой", "узнаешь меня",
+]
+
+STOPWORDS = {
+    "нужен", "нужна", "нужно", "нужны", "какие", "какой", "какая", "какое",
+    "что", "это", "вы", "ты", "мне", "ли", "есть", "добрый", "день", "дент",
+    "утро", "вечер", "привет", "пожалуйста", "для", "как", "чем", "можете",
+    "можно", "хочу", "хочется", "меня", "тебя", "она", "они", "оно", "или",
+    "на", "по", "из", "от", "до", "за", "при", "уже", "ещё", "тоже", "так",
+}
+
 IDENTIFICATION_QUESTION = (
     "Здравствуйте! Я высокотехнологичный сотрудник Bestconsulting. "
     "Уточните, из какой вы организации и представьтесь?"
@@ -38,7 +50,11 @@ GROUP_CONTEXT = {
     "A": "Клиент Группы А (Корпоративный: Газпром инвест, Газстройпром, Системы управления, Ленгазспецстрой, СтройТрансНефтегаз). Стиль: строгий деловой. НЕ предлагать услуги Bestconsulting. НЕ брать деньги. ",
     "B": "Клиент Группы Б (Клиент Bestconsulting). Стиль: экспертный/консультационный. Услуги по прайсу. ",
     "C": "Клиент Группы В (Личные контакты: семья, друзья). Стиль: тёплый личный. НИКАКИХ продаж и цен. ",
-    "FOUNDER": "ОСНОВАТЕЛЬ Павлов Вадим Геннадьевич. Стиль: уважительный, оперативный, инициативный. Исполнять все поручения. Докладывать о результатах. ",
+    "FOUNDER": (
+        "Ты общаешься с ОСНОВАТЕЛЕМ и руководителем компании Bestconsulting — Павлов Вадим Геннадьевич. "
+        "Если он спрашивает 'кто я', 'ты знаешь кто я' или подобное — отвечай прямо: он основатель и руководитель Bestconsulting, Вадим Геннадьевич. "
+        "Стиль: уважительный, оперативный, инициативный. Исполнять все поручения. Докладывать о результатах. "
+    ),
 }
 
 
@@ -66,7 +82,6 @@ class ChatService:
         return any(trig in t for trig in REMEMBER_TRIGGERS)
 
     def _extract_remember_content(self, message: str) -> str:
-        """Отрезает триггерную фразу, оставляя только содержимое для сохранения."""
         t = message.lower()
         for trig in REMEMBER_TRIGGERS:
             idx = t.find(trig)
@@ -74,6 +89,10 @@ class ChatService:
                 rest = message[idx + len(trig):].strip(" :,-—")
                 return rest if rest else message
         return message
+
+    def _is_who_am_i(self, message: str) -> bool:
+        t = message.lower().strip("?!. ")
+        return any(phrase in t for phrase in WHO_AM_I_PHRASES)
 
     async def process_message(self, db: AsyncSession, client_id: str, channel: str, message: str) -> dict:
         try:
@@ -210,7 +229,6 @@ class ChatService:
                     await self.dialog.set_client_group(db, client_id, group)
                     logger.info(f"[Chat] Клиент {client_id} → Группа B (по умолчанию)")
 
-            # --- Подтверждение ожидающего документа (пришедшего файлом или текстом) ---
             pending_doc = await self.dialog.get_pending_document(db, client_id)
             if pending_doc:
                 if message.strip().lower() in ["да", "yes", "подтверждаю", "верно"]:
@@ -242,9 +260,7 @@ class ChatService:
                     }
                 else:
                     await self.dialog.clear_pending_document(db, client_id)
-                    # продолжаем обычную обработку этого сообщения ниже
 
-            # --- Явная просьба «запомни / сохрани в базу» ---
             if self._is_remember_request(message):
                 content = self._extract_remember_content(message)
                 if group == "A":
@@ -443,6 +459,20 @@ class ChatService:
                     "processing_time": round(time.time() - start_time, 3),
                     "session_id": session_id,
                     "group": "FOUNDER",
+                }
+
+            # --- Прямой детерминированный ответ на "кто я" (не зависит от LLM/RAG) ---
+            if self._is_who_am_i(message):
+                response_text = (
+                    "Вы — Павлов Вадим Геннадьевич, основатель и руководитель Bestconsulting. "
+                    "Я готов исполнять ваши поручения."
+                )
+                await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
+                await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+                return {
+                    "response": response_text, "model_used": "system",
+                    "processing_time": round(time.time() - start_time, 3),
+                    "session_id": session_id, "group": "FOUNDER",
                 }
 
             if cmd == "/задача":
@@ -696,41 +726,57 @@ class ChatService:
         return None
 
     async def _fetch_knowledge(self, db: AsyncSession, query: str, group: str) -> str:
+        """Поиск по ключевым словам (не по фразе целиком) — устойчивее к формулировкам."""
         try:
+            raw_words = [w.strip(".,!?:;()\"'«»").lower() for w in query.split()]
+            keywords = [w for w in raw_words if len(w) >= 3 and w not in STOPWORDS]
+
+            if not keywords:
+                keywords = [query.strip()[:50]] if query.strip() else []
+            if not keywords:
+                return ""
+
+            keywords = keywords[:8]  # ограничение, чтобы не раздувать запрос
+
+            conditions = []
+            params = {}
+            for i, kw in enumerate(keywords):
+                conditions.append(f"(title ILIKE :kw{i} OR original_content ILIKE :kw{i})")
+                params[f"kw{i}"] = f"%{kw}%"
+            where_clause = " OR ".join(conditions)
+
             group_tag = f"группа_{group.lower()}" if group else ""
-            
+
             if group_tag:
-                sql = text("""
+                sql = text(f"""
                     SELECT title, original_content, tags 
                     FROM knowledge_items 
-                    WHERE verified = true 
-                      AND (title ILIKE :q OR original_content ILIKE :q)
+                    WHERE verified = true AND ({where_clause})
                     ORDER BY 
                         CASE WHEN tags @> :group_tag_json THEN 0 ELSE 1 END,
                         created_at DESC 
-                    LIMIT 3
+                    LIMIT 5
                 """)
-                result = await db.execute(sql, {"q": f"%{query}%", "group_tag_json": json.dumps([group_tag])})
+                params["group_tag_json"] = json.dumps([group_tag])
             else:
-                sql = text("""
+                sql = text(f"""
                     SELECT title, original_content, tags 
                     FROM knowledge_items 
-                    WHERE verified = true 
-                      AND (title ILIKE :q OR original_content ILIKE :q)
+                    WHERE verified = true AND ({where_clause})
                     ORDER BY created_at DESC 
-                    LIMIT 3
+                    LIMIT 5
                 """)
-                result = await db.execute(sql, {"q": f"%{query}%"})
-            
+
+            result = await db.execute(sql, params)
             rows = result.mappings().all()
             if not rows:
                 return ""
-            
+
             parts = []
             for r in rows:
                 content = r.get('original_content', '') or ''
                 parts.append(f"=== {r['title']} ===\n{content[:1000]}")
-            
+
             return "\n\n".join(parts) if parts else ""
         except Exception as e:
             logger.warning(f"[Chat] Поиск знаний: {e}")
