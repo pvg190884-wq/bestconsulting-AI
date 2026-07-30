@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.services.chat_service import ChatService
+from app.services.file_extract_service import extract_text
 from app.config import settings
 from app.utils.logger import setup_logging
 
@@ -52,6 +53,14 @@ async def send_max_message(chat_id, text: str) -> bool:
         return False
 
 
+async def _download_max_attachment(url: str) -> bytes:
+    """Скачивает вложение MAX по прямой ссылке из payload.url."""
+    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        return r.content
+
+
 @router.post("/webhook")
 async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """Обрабатывает входящие сообщения от МАХ."""
@@ -77,15 +86,38 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             or sender_id
         )
 
-        message_text = (
-            message.get("body", {}).get("text")
-            or data.get("text")
-            or data.get("body")
-            or ""
-        ).strip()
-
         if not sender_id or not chat_id:
             logger.warning(f"[MAX] Нет sender_id/chat_id в webhook: {data}")
+            return {"ok": True}
+
+        body = message.get("body", {}) or {}
+        message_text = (body.get("text") or data.get("text") or data.get("body") or "").strip()
+        attachments = body.get("attachments") or []
+
+        service = _get_chat_service()
+
+        # --- Обработка вложений (файлы/фото) ---
+        if attachments:
+            att = attachments[0]
+            att_type = att.get("type")
+            payload = att.get("payload", {}) or {}
+            file_url = payload.get("url")
+            filename = att.get("filename") or ("photo.jpg" if att_type == "image" else "file")
+
+            if file_url:
+                try:
+                    content = await _download_max_attachment(file_url)
+                    extracted = await extract_text(content, filename, llm_service=service.llm)
+                    if not extracted:
+                        await send_max_message(chat_id, "Не удалось извлечь текст из файла. Поддерживаются: TXT, PDF, Excel, PowerPoint, JPG, PNG.")
+                        return {"ok": True}
+                    result = await service.process_file(db, sender_id, "max", extracted, filename)
+                    await send_max_message(chat_id, result.get("response", "Файл обработан."))
+                except Exception as e:
+                    logger.error(f"[MAX] Ошибка обработки вложения: {e}")
+                    await send_max_message(chat_id, "Ошибка при обработке файла. Попробуйте ещё раз.")
+            else:
+                logger.warning(f"[MAX] Вложение без payload.url: {att}")
             return {"ok": True}
 
         if not message_text:
@@ -93,7 +125,6 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
         logger.info(f"[MAX] Входящее от {sender_id} (chat {chat_id}): {message_text[:100]}...")
 
-        service = _get_chat_service()
         result = await service.process_message(db, sender_id, "max", message_text)
 
         if isinstance(result, dict) and result.get("response"):
