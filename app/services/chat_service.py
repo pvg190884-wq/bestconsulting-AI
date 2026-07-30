@@ -24,6 +24,11 @@ GROUP_KEYWORDS = {
     "C": ["семья", "друг", "личн", "знаком", "родственник", "дом", "дружб"],
 }
 
+REMEMBER_TRIGGERS = [
+    "запомни", "сохрани в баз", "сохрани в базу", "занеси в базу",
+    "добавь в базу знаний", "зафиксируй в базе", "запиши в базу",
+]
+
 IDENTIFICATION_QUESTION = (
     "Здравствуйте! Я высокотехнологичный сотрудник Bestconsulting. "
     "Уточните, из какой вы организации и представьтесь?"
@@ -56,6 +61,20 @@ class ChatService:
         self.founder = FounderService()
         self.system_prompt = _load_system_prompt()
 
+    def _is_remember_request(self, message: str) -> bool:
+        t = message.lower()
+        return any(trig in t for trig in REMEMBER_TRIGGERS)
+
+    def _extract_remember_content(self, message: str) -> str:
+        """Отрезает триггерную фразу, оставляя только содержимое для сохранения."""
+        t = message.lower()
+        for trig in REMEMBER_TRIGGERS:
+            idx = t.find(trig)
+            if idx != -1:
+                rest = message[idx + len(trig):].strip(" :,-—")
+                return rest if rest else message
+        return message
+
     async def process_message(self, db: AsyncSession, client_id: str, channel: str, message: str) -> dict:
         try:
             return await self._process(db, client_id, channel, message)
@@ -73,6 +92,79 @@ class ChatService:
                 "session_id": f"{client_id}_{channel}",
                 "group": None,
                 "error_detail": err[:500],
+            }
+
+    async def process_file(self, db: AsyncSession, client_id: str, channel: str,
+                            extracted_text: str, filename: str) -> dict:
+        """Обрабатывает файл, присланный в чат (уже с извлечённым текстом)."""
+        session_id = f"{client_id}_{channel}"
+        try:
+            is_founder = self.founder.is_founder(client_id, channel)
+            client = await self.dialog._get_or_create_client(db, client_id, channel)
+            group = await self.dialog.get_client_group(db, client_id)
+
+            if is_founder and group != "FOUNDER":
+                group = "FOUNDER"
+                await self.dialog.set_client_group(db, client_id, "FOUNDER")
+
+            if not extracted_text or not extracted_text.strip():
+                return {
+                    "response": "Не удалось извлечь текст из файла. Поддерживаются: TXT, PDF, Excel, PowerPoint, JPG, PNG.",
+                    "model_used": "system", "session_id": session_id, "group": group,
+                }
+
+            if group == "FOUNDER":
+                res = await self.founder.save_founder_knowledge(
+                    db, extracted_text, title=f"Файл от основателя: {filename}"
+                )
+                if res["success"]:
+                    response_text = f"✅ Файл «{filename}» сохранён в базу знаний (ID: {res['id']})."
+                else:
+                    response_text = f"❌ Ошибка сохранения файла: {res.get('error')}"
+                await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}]")
+                await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+                return {"response": response_text, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+            if not group:
+                await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}]")
+                await self.dialog.save_message(db, session_id, client_id, channel, "assistant", IDENTIFICATION_QUESTION)
+                return {
+                    "response": IDENTIFICATION_QUESTION, "model_used": "system",
+                    "session_id": session_id, "group": None, "requires_identification": True,
+                }
+
+            if group == "A":
+                await self.dialog.set_pending_document(
+                    db, client_id, {"text": extracted_text[:8000], "filename": filename}
+                )
+                response_text = (
+                    f"Получен файл «{filename}». Это официальный подписанный документ для базы знаний? "
+                    f"Ответьте «да» для подтверждения."
+                )
+                await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}]")
+                await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+                return {
+                    "response": response_text, "model_used": "system",
+                    "session_id": session_id, "group": "A", "awaiting_verification": True,
+                }
+
+            response_text = (
+                "База знаний пополняется только по официально подтверждённым документам "
+                "от партнёров группы А или поручениям основателя."
+            )
+            await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}]")
+            await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+            return {"response": response_text, "model_used": "system", "session_id": session_id, "group": group}
+
+        except Exception as e:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            logger.error(f"[Chat] Ошибка обработки файла: {traceback.format_exc()}")
+            return {
+                "response": "Ошибка при обработке файла. Попробуйте ещё раз.",
+                "model_used": "error", "session_id": session_id, "group": None,
             }
 
     async def _process(self, db: AsyncSession, client_id: str, channel: str, message: str) -> dict:
@@ -117,6 +209,59 @@ class ChatService:
                     group = "B"
                     await self.dialog.set_client_group(db, client_id, group)
                     logger.info(f"[Chat] Клиент {client_id} → Группа B (по умолчанию)")
+
+            # --- Подтверждение ожидающего документа (пришедшего файлом или текстом) ---
+            pending_doc = await self.dialog.get_pending_document(db, client_id)
+            if pending_doc:
+                if message.strip().lower() in ["да", "yes", "подтверждаю", "верно"]:
+                    res = await self.founder.save_founder_knowledge(
+                        db, pending_doc["text"],
+                        title=f"Документ от группы А: {pending_doc.get('filename') or 'без файла'}"
+                    )
+                    try:
+                        await db.execute(text("""
+                            UPDATE knowledge_items 
+                            SET tags = array_append(tags, 'группа_а_подписано') 
+                            WHERE id = :kid
+                        """), {"kid": res["id"]})
+                        await db.commit()
+                    except Exception:
+                        await db.rollback()
+
+                    await self.dialog.clear_pending_document(db, client_id)
+                    response_text = (
+                        f"✅ Документ верифицирован и сохранён (ID: {res['id']}). "
+                        f"Версия: v1. Дата: {datetime.now().strftime('%Y-%m-%d')}."
+                    )
+                    await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
+                    await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+                    return {
+                        "response": response_text, "model_used": "system",
+                        "processing_time": round(time.time() - start_time, 3),
+                        "session_id": session_id, "group": "A",
+                    }
+                else:
+                    await self.dialog.clear_pending_document(db, client_id)
+                    # продолжаем обычную обработку этого сообщения ниже
+
+            # --- Явная просьба «запомни / сохрани в базу» ---
+            if self._is_remember_request(message):
+                content = self._extract_remember_content(message)
+                if group == "A":
+                    await self.dialog.set_pending_document(db, client_id, {"text": content, "filename": None})
+                    response_text = "Это официальный подписанный документ для базы знаний? Ответьте «да» для подтверждения."
+                else:
+                    response_text = (
+                        "База знаний пополняется только по официально подтверждённым документам "
+                        "от партнёров группы А или поручениям основателя."
+                    )
+                await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
+                await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+                return {
+                    "response": response_text, "model_used": "system",
+                    "processing_time": round(time.time() - start_time, 3),
+                    "session_id": session_id, "group": group,
+                }
 
             if group == "A" and len(message) > 50:
                 return await self._handle_group_a_document(db, client_id, channel, message, history, start_time, session_id)
@@ -240,6 +385,10 @@ class ChatService:
             knowledge_text = await self._fetch_knowledge(db, message, group)
 
             system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT.get(group, "")
+            system_msg += (
+                "\n\nВАЖНО: отвечай ТОЛЬКО на основе предоставленной базы знаний (см. ниже) и текущих правил. "
+                "Если информации нет в базе знаний — ответь 'Нет данных.' Не выдумывай факты, цены или обещания от имени компании."
+            )
 
             messages = [{"role": "system", "content": system_msg}]
             if knowledge_text:
@@ -390,7 +539,19 @@ class ChatService:
 
             if cmd == "/очистить":
                 await self.dialog.clear_pending_escalation(db, client_id)
+                await self.dialog.clear_pending_document(db, client_id)
                 return {"response": "✅ Ожидания сброшены. Готов к новым задачам.", "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+            if self._is_remember_request(message):
+                content = self._extract_remember_content(message)
+                res = await self.founder.save_founder_knowledge(db, content)
+                if res["success"]:
+                    response_text = f"✅ Сохранено в базу знаний (ID: {res['id']})."
+                else:
+                    response_text = f"❌ Ошибка сохранения: {res.get('error')}"
+                await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
+                await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+                return {"response": response_text, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
 
             await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
             
