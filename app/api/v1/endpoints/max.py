@@ -24,7 +24,6 @@ MAX_API_HOST = "https://platform-api2.max.ru"
 
 
 async def send_max_message(chat_id, text: str) -> bool:
-    """Отправляет текстовое сообщение в чат МАХ по chat_id."""
     if not text or not chat_id:
         return False
     try:
@@ -53,14 +52,7 @@ async def send_max_message(chat_id, text: str) -> bool:
         return False
 
 
-async def _download_max_attachment(url: str) -> bytes:
-    """Скачивает вложение MAX по прямой ссылке из payload.url."""
-    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        return r.content
 async def send_max_document(chat_id, file_bytes: bytes, filename: str) -> bool:
-    """Отправляет файл в MAX: получение upload-URL → загрузка → отправка сообщения с вложением."""
     try:
         cid = int(chat_id)
     except (ValueError, TypeError):
@@ -71,7 +63,6 @@ async def send_max_document(chat_id, file_bytes: bytes, filename: str) -> bool:
 
     try:
         async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
-            # 1. Получаем временный upload-URL
             r1 = await client.get(f"{MAX_API_HOST}/uploads", params={"type": "file"}, headers=headers)
             r1.raise_for_status()
             upload_url = r1.json().get("url")
@@ -79,7 +70,6 @@ async def send_max_document(chat_id, file_bytes: bytes, filename: str) -> bool:
                 logger.error(f"[MAX] Не удалось получить upload-URL: {r1.text[:200]}")
                 return False
 
-            # 2. Загружаем файл на полученный URL
             files = {"data": (filename, file_bytes)}
             r2 = await client.post(upload_url, files=files)
             r2.raise_for_status()
@@ -89,10 +79,7 @@ async def send_max_document(chat_id, file_bytes: bytes, filename: str) -> bool:
                 logger.error(f"[MAX] Не удалось получить token загрузки: {r2.text[:300]}")
                 return False
 
-            # 3. Отправляем сообщение с вложением
-            payload = {
-                "attachments": [{"type": "file", "payload": {"token": token}}]
-            }
+            payload = {"attachments": [{"type": "file", "payload": {"token": token}}]}
             r3 = await client.post(
                 f"{MAX_API_HOST}/messages?chat_id={cid}",
                 headers={**headers, "Content-Type": "application/json"},
@@ -108,9 +95,25 @@ async def send_max_document(chat_id, file_bytes: bytes, filename: str) -> bool:
         logger.error(f"[MAX] Ошибка отправки файла: {e}")
         return False
 
+
+async def _download_max_attachment(url: str) -> bytes:
+    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        return r.content
+
+
+async def _deliver_result(chat_id, result: dict):
+    response_text = result.get("response", "Ошибка обработки")
+    await send_max_message(chat_id, response_text)
+    file_bytes = result.get("file_bytes")
+    filename = result.get("filename")
+    if file_bytes and filename:
+        await send_max_document(chat_id, file_bytes, filename)
+
+
 @router.post("/webhook")
 async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    """Обрабатывает входящие сообщения от МАХ."""
     try:
         data = await request.json()
         logger.debug(f"[MAX] Raw webhook: {data}")
@@ -143,7 +146,6 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
         service = _get_chat_service()
 
-        # --- Обработка вложений (файлы/фото) ---
         if attachments:
             att = attachments[0]
             att_type = att.get("type")
@@ -158,8 +160,8 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     if not extracted:
                         await send_max_message(chat_id, "Не удалось извлечь текст из файла. Поддерживаются: TXT, PDF, Excel, PowerPoint, JPG, PNG.")
                         return {"ok": True}
-                    result = await service.process_file(db, sender_id, "max", extracted, filename)
-                    await send_max_message(chat_id, result.get("response", "Файл обработан."))
+                    result = await service.process_file(db, sender_id, "max", extracted, filename, caption=message_text)
+                    await _deliver_result(chat_id, result)
                 except Exception as e:
                     logger.error(f"[MAX] Ошибка обработки вложения: {e}")
                     await send_max_message(chat_id, "Ошибка при обработке файла. Попробуйте ещё раз.")
@@ -173,9 +175,7 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         logger.info(f"[MAX] Входящее от {sender_id} (chat {chat_id}): {message_text[:100]}...")
 
         result = await service.process_message(db, sender_id, "max", message_text)
-
-        if isinstance(result, dict) and result.get("response"):
-            await send_max_message(chat_id, result["response"])
+        await _deliver_result(chat_id, result)
 
         return {"ok": True}
     except Exception as e:
@@ -186,5 +186,4 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.get("/health")
 async def max_health():
-    """Health-check для МАХ модуля."""
     return {"status": "ok", "service": "max"}
