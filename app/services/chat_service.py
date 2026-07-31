@@ -29,6 +29,13 @@ GROUP_KEYWORDS = {
 REMEMBER_TRIGGERS = [
     "запомни", "сохрани в баз", "сохрани в базу", "занеси в базу",
     "добавь в базу знаний", "зафиксируй в базе", "запиши в базу",
+    "сохранить информацию", "нужно сохранить", "сохрани эту",
+    "занеси эту", "сохранить в базу", "сохранить в базе",
+]
+
+DOCUMENT_REFERENCE_WORDS = [
+    "документ", "файл", "детализирова", "подробн", "полную информацию",
+    "все пункты", "веху", "вехи", "названия", "сроки", "подъобъект", "пункт",
 ]
 
 WHO_AM_I_PHRASES = [
@@ -66,8 +73,11 @@ GROUP_CONTEXT = {
         "Если он спрашивает 'кто я', 'ты знаешь кто я' или подобное — отвечай прямо: он основатель и руководитель Bestconsulting, Вадим Геннадьевич. "
         "Правило передачи менеджеру (эскалация клиентских заказов Группы Б) к тебе НЕ применяется — ты и есть руководитель, "
         "не отвечай фразой 'ваш запрос принят, передам руководителю' на его собственные просьбы. "
-        "У тебя ЕСТЬ функции: сохранение информации в базу знаний по команде «запомни»/«сохрани в базу», приём и анализ файлов "
-        "(TXT, PDF, Excel, PowerPoint, JPG, PNG), формирование докладов/презентаций/таблиц через команду /доклад. "
+        "Правило верификации документов (требование подтвердить 'это подписанный документ?') относится ТОЛЬКО к клиентам Группы А "
+        "и НИКОГДА не применяется к самому основателю — он может сохранять любую информацию в базу знаний сразу по команде "
+        "«запомни»/«сохрани», без запроса подтверждения о подписи документа. "
+        "У тебя ЕСТЬ функции: сохранение информации в базу знаний, приём и анализ файлов (TXT, PDF, Excel, PowerPoint, JPG, PNG), "
+        "формирование докладов/презентаций/таблиц через команду /доклад. "
         "Никогда не говори, что не можешь сохранять информацию или анализировать документы — эти функции у тебя есть. "
         "Стиль: уважительный, оперативный, инициативный. Исполнять все поручения. Докладывать о результатах. "
     ),
@@ -110,6 +120,10 @@ class ChatService:
                 return rest if rest else message
         return message
 
+    def _references_document(self, message: str) -> bool:
+        t = message.lower()
+        return any(w in t for w in DOCUMENT_REFERENCE_WORDS)
+
     def _is_who_am_i(self, message: str) -> bool:
         t = message.lower().strip("?!. ")
         return any(phrase in t for phrase in WHO_AM_I_PHRASES)
@@ -122,7 +136,6 @@ class ChatService:
         return None
 
     async def _maybe_learn_style(self, db: AsyncSession, client_id: str, message: str):
-        """Лёгкое извлечение имени контакта — сохраняем, чтобы обращаться по имени."""
         name = self._extract_name(message)
         if name:
             try:
@@ -132,7 +145,6 @@ class ChatService:
                 logger.warning(f"[Chat] Не удалось сохранить имя: {e}")
 
     async def _generate_creative(self, messages: list[dict]) -> str:
-        """Более свободная, живая генерация через DeepSeek — для тёплого общения (Группа В)."""
         api_key = getattr(self.llm, "api_key", None)
         base_url = getattr(self.llm, "base_url", None) or "https://openrouter.ai/api/v1"
 
@@ -182,8 +194,6 @@ class ChatService:
 
     async def process_file(self, db: AsyncSession, client_id: str, channel: str,
                             extracted_text: str, filename: str, caption: str = "") -> dict:
-        """Обрабатывает файл. Если в подписи есть 'запомни/сохрани' — сохраняет в базу знаний
-        (с верификацией для группы А). Иначе — разовый анализ БЕЗ сохранения."""
         session_id = f"{client_id}_{channel}"
         try:
             is_founder = self.founder.is_founder(client_id, channel)
@@ -208,9 +218,11 @@ class ChatService:
                     "session_id": session_id, "group": None, "requires_identification": True,
                 }
 
+            # Кэшируем полный текст документа — понадобится для follow-up вопросов и remember
+            await self.dialog.set_last_document(db, client_id, {"text": extracted_text, "filename": filename})
+
             wants_remember = self._is_remember_request(caption)
 
-            # --- Явная просьба сохранить файл в базу знаний ---
             if wants_remember:
                 if group == "FOUNDER":
                     res = await self.founder.save_founder_knowledge(
@@ -247,20 +259,21 @@ class ChatService:
                 await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
                 return {"response": response_text, "model_used": "system", "session_id": session_id, "group": group}
 
-            # --- Разовый анализ файла БЕЗ сохранения (п.3) ---
-            question = caption.strip() if caption and caption.strip() else "Проанализируй содержимое документа и дай краткую сводку по сути."
+            # --- Разовый анализ файла БЕЗ сохранения ---
+            question = caption.strip() if caption and caption.strip() else "Проанализируй содержимое документа детально: перечисли ВСЕ пункты, даты и названия без сокращений."
             system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT.get(group, "")
             messages = [
                 {"role": "system", "content": system_msg},
                 {"role": "system", "content": (
-                    f"Ниже — содержимое присланного документа «{filename}». Это разовый анализ, "
-                    f"документ НЕ сохраняется в базу знаний. Используй его только для ответа на текущий вопрос.\n\n"
-                    f"{extracted_text[:6000]}"
+                    f"Ниже — ПОЛНОЕ содержимое присланного документа «{filename}». Это разовый анализ, "
+                    f"документ НЕ сохраняется в базу знаний автоматически. Отвечай на основе ВСЕГО текста ниже, "
+                    f"не сокращай и не обобщай пункты, если явно не попросили краткую сводку.\n\n"
+                    f"{extracted_text[:8000]}"
                 )},
                 {"role": "user", "content": question},
             ]
             try:
-                result = await self.llm.generate("openai", messages, temperature=0.3)
+                result = await self.llm.generate("openai", messages, temperature=0.2)
                 response_text = result["content"]
                 model_used = result.get("model", "openai")
             except Exception as e:
@@ -328,7 +341,6 @@ class ChatService:
                     await self.dialog.set_client_group(db, client_id, group)
                     logger.info(f"[Chat] Клиент {client_id} → Группа B (по умолчанию)")
 
-            # --- Память имени/стиля контакта (п.5) ---
             await self._maybe_learn_style(db, client_id, message)
 
             pending_doc = await self.dialog.get_pending_document(db, client_id)
@@ -365,6 +377,12 @@ class ChatService:
 
             if self._is_remember_request(message):
                 content = self._extract_remember_content(message)
+
+                if self._references_document(message):
+                    last_doc = await self.dialog.get_last_document(db, client_id)
+                    if last_doc and last_doc.get("text"):
+                        content = last_doc["text"]
+
                 if group == "A":
                     await self.dialog.set_pending_document(db, client_id, {"text": content, "filename": None})
                     response_text = "Это официальный подписанный документ для базы знаний? Ответьте «да» для подтверждения."
@@ -504,7 +522,6 @@ class ChatService:
             client_style = await self.dialog.get_client_style(db, client_id)
             name_hint = f"Обращайся к собеседнику по имени: {client_style['name']}. " if client_style.get("name") else ""
 
-            # --- Группа В: тёплое творческое общение (п.1) через DeepSeek ---
             if group == "C":
                 system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT["C"] + name_hint
                 messages = [{"role": "system", "content": system_msg}]
@@ -527,6 +544,16 @@ class ChatService:
                     "group": group,
                 }
 
+            # Если недавно был прислан документ и текущий вопрос ссылается на него — подмешиваем полный текст
+            document_context = ""
+            if self._references_document(message):
+                last_doc = await self.dialog.get_last_document(db, client_id)
+                if last_doc and last_doc.get("text"):
+                    document_context = (
+                        f"Ранее присланный документ «{last_doc.get('filename', '')}» "
+                        f"(используй для ответа на текущий вопрос):\n\n{last_doc['text'][:8000]}"
+                    )
+
             knowledge_text = await self._fetch_knowledge(db, message, group)
 
             system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT.get(group, "") + name_hint
@@ -536,6 +563,8 @@ class ChatService:
             )
 
             messages = [{"role": "system", "content": system_msg}]
+            if document_context:
+                messages.append({"role": "system", "content": document_context})
             if knowledge_text:
                 messages.append({"role": "system", "content": knowledge_text})
             for h in history:
@@ -671,6 +700,8 @@ class ChatService:
                     fmt = "pdf"
 
                 knowledge_text = await self._fetch_knowledge(db, arg, "FOUNDER")
+                last_doc = await self.dialog.get_last_document(db, client_id)
+                doc_context = last_doc["text"][:8000] if (last_doc and self._references_document(arg)) else ""
 
                 if fmt == "xlsx":
                     struct_instruction = (
@@ -686,12 +717,14 @@ class ChatService:
                     )
                 else:
                     struct_instruction = (
-                        "Сформируй структуру аналитического доклада по теме запроса. "
-                        "Ответь СТРОГО валидным JSON без markdown, без пояснений, в формате: "
+                        "Сформируй структуру аналитического доклада по теме запроса, максимально подробно, "
+                        "не сокращай детали. Ответь СТРОГО валидным JSON без markdown, без пояснений, в формате: "
                         '{"sections": [{"heading": "Заголовок раздела", "text": "Текст раздела"}, ...]}'
                     )
 
                 gen_messages = [{"role": "system", "content": struct_instruction}]
+                if doc_context:
+                    gen_messages.append({"role": "system", "content": f"Содержимое ранее присланного документа:\n{doc_context}"})
                 if knowledge_text:
                     gen_messages.append({"role": "system", "content": f"База знаний по теме:\n{knowledge_text}"})
                 gen_messages.append({"role": "user", "content": arg})
@@ -752,10 +785,17 @@ class ChatService:
             if cmd == "/очистить":
                 await self.dialog.clear_pending_escalation(db, client_id)
                 await self.dialog.clear_pending_document(db, client_id)
+                await self.dialog.clear_last_document(db, client_id)
                 return {"response": "✅ Ожидания сброшены. Готов к новым задачам.", "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
 
             if self._is_remember_request(message):
                 content = self._extract_remember_content(message)
+
+                if self._references_document(message):
+                    last_doc = await self.dialog.get_last_document(db, client_id)
+                    if last_doc and last_doc.get("text"):
+                        content = last_doc["text"]
+
                 res = await self.founder.save_founder_knowledge(db, content)
                 response_text = (
                     f"✅ Сохранено в базу знаний (ID: {res['id']})."
@@ -773,10 +813,21 @@ class ChatService:
             else:
                 prefix = ""
 
+            document_context = ""
+            if self._references_document(message):
+                last_doc = await self.dialog.get_last_document(db, client_id)
+                if last_doc and last_doc.get("text"):
+                    document_context = (
+                        f"Ранее присланный документ «{last_doc.get('filename', '')}» "
+                        f"(используй для ответа на текущий вопрос, отвечай ПОДРОБНО, без сокращений):\n\n{last_doc['text'][:8000]}"
+                    )
+
             knowledge_text = await self._fetch_knowledge(db, message, "FOUNDER")
             system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT["FOUNDER"]
 
             messages = [{"role": "system", "content": system_msg}]
+            if document_context:
+                messages.append({"role": "system", "content": document_context})
             if knowledge_text:
                 messages.append({"role": "system", "content": knowledge_text})
             hist = await self.dialog.get_history(db, session_id, limit=10)
@@ -908,7 +959,6 @@ class ChatService:
         return None
 
     async def _fetch_knowledge(self, db: AsyncSession, query: str, group: str) -> str:
-        """Поиск по ключевым словам (не по фразе целиком) — устойчивее к формулировкам."""
         try:
             raw_words = [w.strip(".,!?:;()\"'«»").lower() for w in query.split()]
             keywords = [w for w in raw_words if len(w) >= 3 and w not in STOPWORDS]
