@@ -108,6 +108,26 @@ class DialogManager:
             flag_modified(client, "extra_data")
             await db.commit()
 
+    async def get_client_style(self, db: AsyncSession, client_id: str) -> dict:
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client and client.extra_data:
+            return client.extra_data.get("style", {})
+        return {}
+
+    async def set_client_style(self, db: AsyncSession, client_id: str, style: dict):
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client:
+            if not client.extra_data:
+                client.extra_data = {}
+            existing = client.extra_data.get("style", {})
+            existing.update(style)
+            client.extra_data["style"] = existing
+            flag_modified(client, "extra_data")
+            await db.commit()
+            logger.info(f"[Dialog] Стиль/имя сохранены для {client_id}: {style}")
+
     async def get_history(self, db: AsyncSession, session_id: str, limit: int = 20) -> list[dict]:
         result = await db.execute(
             select(ChatMessage)
