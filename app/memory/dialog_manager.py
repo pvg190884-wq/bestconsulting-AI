@@ -127,7 +127,31 @@ class DialogManager:
             flag_modified(client, "extra_data")
             await db.commit()
             logger.info(f"[Dialog] Стиль/имя сохранены для {client_id}: {style}")
+async def get_last_document(self, db: AsyncSession, client_id: str) -> dict | None:
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client and client.extra_data:
+            return client.extra_data.get("last_document")
+        return None
 
+    async def set_last_document(self, db: AsyncSession, client_id: str, data: dict):
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client:
+            if not client.extra_data:
+                client.extra_data = {}
+            client.extra_data["last_document"] = data
+            flag_modified(client, "extra_data")
+            await db.commit()
+            logger.info(f"[Dialog] Последний документ закэширован для {client_id}: {data.get('filename')}")
+
+    async def clear_last_document(self, db: AsyncSession, client_id: str):
+        result = await db.execute(select(Client).where(Client.external_id == client_id))
+        client = result.scalar_one_or_none()
+        if client and client.extra_data:
+            client.extra_data.pop("last_document", None)
+            flag_modified(client, "extra_data")
+            await db.commit()
     async def get_history(self, db: AsyncSession, session_id: str, limit: int = 20) -> list[dict]:
         result = await db.execute(
             select(ChatMessage)
