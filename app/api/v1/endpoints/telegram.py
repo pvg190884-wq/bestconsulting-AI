@@ -3,7 +3,7 @@ import httpx
 from fastapi import APIRouter, Request, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db
-from app.services.telegram_service import send_message
+from app.services.telegram_service import send_message, send_document
 from app.services.chat_service import ChatService
 from app.services.file_extract_service import extract_text
 from app.config import settings
@@ -16,7 +16,6 @@ TELEGRAM_API = "https://api.telegram.org/bot"
 
 
 async def _download_telegram_file(file_id: str) -> tuple[bytes, str]:
-    """Скачивает файл из Telegram по file_id. Возвращает (bytes, filename)."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(f"{TELEGRAM_API}{settings.TELEGRAM_BOT_TOKEN}/getFile", params={"file_id": file_id})
         data = r.json()
@@ -30,9 +29,18 @@ async def _download_telegram_file(file_id: str) -> tuple[bytes, str]:
         return r2.content, real_filename
 
 
+async def _deliver_result(chat_id: int, result: dict):
+    """Отправляет текст и, если есть, сгенерированный файл."""
+    response_text = result.get("response", "Ошибка обработки")
+    await send_message(chat_id, response_text)
+    file_bytes = result.get("file_bytes")
+    filename = result.get("filename")
+    if file_bytes and filename:
+        await send_document(chat_id, file_bytes, filename)
+
+
 @router.post("/webhook")
 async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    """Принимает webhook от Telegram."""
     data = await request.json()
 
     if "message" not in data:
@@ -57,9 +65,9 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
     user_id = str(chat_id)
     service = ChatService()
 
-    # --- Обработка файлов и фото ---
     document = msg.get("document")
     photos = msg.get("photo")
+    caption = msg.get("caption", "")
 
     file_id = None
     doc_filename = None
@@ -68,7 +76,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
         file_id = document.get("file_id")
         doc_filename = document.get("file_name") or "document"
     elif photos:
-        largest = photos[-1]  # Telegram отдаёт массив размеров — берём самый большой
+        largest = photos[-1]
         file_id = largest.get("file_id")
 
     if file_id:
@@ -79,8 +87,8 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
             if not extracted:
                 await send_message(chat_id, "Не удалось извлечь текст из файла. Поддерживаются: TXT, PDF, Excel, PowerPoint, JPG, PNG.")
                 return {"ok": True}
-            result = await service.process_file(db, user_id, "telegram", extracted, use_filename)
-            await send_message(chat_id, result.get("response", "Файл обработан."))
+            result = await service.process_file(db, user_id, "telegram", extracted, use_filename, caption=caption)
+            await _deliver_result(chat_id, result)
         except Exception as e:
             logger.error(f"[TG] Ошибка обработки файла: {e}")
             await send_message(chat_id, "Ошибка при обработке файла. Попробуйте ещё раз.")
@@ -90,7 +98,6 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
         return {"ok": True}
 
     result = await service.process_message(db, user_id, "telegram", text)
-    response_text = result.get("response", "Ошибка обработки")
-    await send_message(chat_id, response_text)
+    await _deliver_result(chat_id, result)
 
     return {"ok": True}
