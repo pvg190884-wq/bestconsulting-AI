@@ -2,12 +2,14 @@
 import time
 import traceback
 import json
+import re
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
 from app.services.llm_service import LLMService
 from app.services.founder_service import FounderService
+from app.services.document_generator import build_xlsx, build_pptx, build_pdf
 from app.memory.dialog_manager import DialogManager
 from app.utils.logger import setup_logging
 
@@ -33,6 +35,11 @@ WHO_AM_I_PHRASES = [
     "кто я", "ты знаешь кто я", "как меня зовут", "кто я такой", "узнаешь меня",
 ]
 
+NAME_PATTERNS = [
+    re.compile(r"меня зовут ([А-ЯЁ][а-яё]+)", re.IGNORECASE),
+    re.compile(r"я\s*[—\-–]\s*([А-ЯЁ][а-яё]+)\b"),
+]
+
 STOPWORDS = {
     "нужен", "нужна", "нужно", "нужны", "какие", "какой", "какая", "какое",
     "что", "это", "вы", "ты", "мне", "ли", "есть", "добрый", "день", "дент",
@@ -49,10 +56,19 @@ IDENTIFICATION_QUESTION = (
 GROUP_CONTEXT = {
     "A": "Клиент Группы А (Корпоративный: Газпром инвест, Газстройпром, Системы управления, Ленгазспецстрой, СтройТрансНефтегаз). Стиль: строгий деловой. НЕ предлагать услуги Bestconsulting. НЕ брать деньги. ",
     "B": "Клиент Группы Б (Клиент Bestconsulting). Стиль: экспертный/консультационный. Услуги по прайсу. ",
-    "C": "Клиент Группы В (Личные контакты: семья, друзья). Стиль: тёплый личный. НИКАКИХ продаж и цен. ",
+    "C": (
+        "Клиент Группы В (Личные контакты: семья, друзья). Стиль: тёплый, живой, неформальный личный. "
+        "НИКАКИХ продаж, цен и услуг. Можно свободно поддерживать разговор на любые темы "
+        "(погода, настроение, общие темы) — это нормальное живое общение, а не консультация. "
+    ),
     "FOUNDER": (
         "Ты общаешься с ОСНОВАТЕЛЕМ и руководителем компании Bestconsulting — Павлов Вадим Геннадьевич. "
         "Если он спрашивает 'кто я', 'ты знаешь кто я' или подобное — отвечай прямо: он основатель и руководитель Bestconsulting, Вадим Геннадьевич. "
+        "Правило передачи менеджеру (эскалация клиентских заказов Группы Б) к тебе НЕ применяется — ты и есть руководитель, "
+        "не отвечай фразой 'ваш запрос принят, передам руководителю' на его собственные просьбы. "
+        "У тебя ЕСТЬ функции: сохранение информации в базу знаний по команде «запомни»/«сохрани в базу», приём и анализ файлов "
+        "(TXT, PDF, Excel, PowerPoint, JPG, PNG), формирование докладов/презентаций/таблиц через команду /доклад. "
+        "Никогда не говори, что не можешь сохранять информацию или анализировать документы — эти функции у тебя есть. "
         "Стиль: уважительный, оперативный, инициативный. Исполнять все поручения. Докладывать о результатах. "
     ),
 }
@@ -77,7 +93,11 @@ class ChatService:
         self.founder = FounderService()
         self.system_prompt = _load_system_prompt()
 
+    # ---------- Вспомогательные детекторы ----------
+
     def _is_remember_request(self, message: str) -> bool:
+        if not message:
+            return False
         t = message.lower()
         return any(trig in t for trig in REMEMBER_TRIGGERS)
 
@@ -94,6 +114,51 @@ class ChatService:
         t = message.lower().strip("?!. ")
         return any(phrase in t for phrase in WHO_AM_I_PHRASES)
 
+    def _extract_name(self, message: str) -> str | None:
+        for pattern in NAME_PATTERNS:
+            m = pattern.search(message)
+            if m:
+                return m.group(1)
+        return None
+
+    async def _maybe_learn_style(self, db: AsyncSession, client_id: str, message: str):
+        """Лёгкое извлечение имени контакта — сохраняем, чтобы обращаться по имени."""
+        name = self._extract_name(message)
+        if name:
+            try:
+                await self.dialog.set_client_style(db, client_id, {"name": name})
+                logger.info(f"[Chat] Имя контакта сохранено: {name} ({client_id})")
+            except Exception as e:
+                logger.warning(f"[Chat] Не удалось сохранить имя: {e}")
+
+    async def _generate_creative(self, messages: list[dict]) -> str:
+        """Более свободная, живая генерация через DeepSeek — для тёплого общения (Группа В)."""
+        api_key = getattr(self.llm, "api_key", None)
+        base_url = getattr(self.llm, "base_url", None) or "https://openrouter.ai/api/v1"
+
+        if api_key:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    r = await client.post(
+                        f"{base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={"model": "deepseek/deepseek-chat", "messages": messages, "temperature": 0.8},
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                    return data["choices"][0]["message"]["content"]
+            except Exception as e:
+                logger.warning(f"[Chat] Creative (DeepSeek) недоступен, fallback: {e}")
+
+        try:
+            result = await self.llm.generate("openai", messages, temperature=0.8)
+            return result.get("content", "")
+        except Exception:
+            return "Извините, не могу сейчас ответить, но обязательно вернусь к разговору чуть позже."
+
+    # ---------- Обработка входящих текстовых сообщений ----------
+
     async def process_message(self, db: AsyncSession, client_id: str, channel: str, message: str) -> dict:
         try:
             return await self._process(db, client_id, channel, message)
@@ -105,7 +170,7 @@ class ChatService:
             except Exception:
                 pass
             return {
-                "response": f"Ошибка сервера. Попробуйте ещё раз.",
+                "response": "Ошибка сервера. Попробуйте ещё раз.",
                 "model_used": "error",
                 "processing_time": 0,
                 "session_id": f"{client_id}_{channel}",
@@ -113,9 +178,12 @@ class ChatService:
                 "error_detail": err[:500],
             }
 
+    # ---------- Обработка файлов (п.3 и п.4) ----------
+
     async def process_file(self, db: AsyncSession, client_id: str, channel: str,
-                            extracted_text: str, filename: str) -> dict:
-        """Обрабатывает файл, присланный в чат (уже с извлечённым текстом)."""
+                            extracted_text: str, filename: str, caption: str = "") -> dict:
+        """Обрабатывает файл. Если в подписи есть 'запомни/сохрани' — сохраняет в базу знаний
+        (с верификацией для группы А). Иначе — разовый анализ БЕЗ сохранения."""
         session_id = f"{client_id}_{channel}"
         try:
             is_founder = self.founder.is_founder(client_id, channel)
@@ -132,18 +200,6 @@ class ChatService:
                     "model_used": "system", "session_id": session_id, "group": group,
                 }
 
-            if group == "FOUNDER":
-                res = await self.founder.save_founder_knowledge(
-                    db, extracted_text, title=f"Файл от основателя: {filename}"
-                )
-                if res["success"]:
-                    response_text = f"✅ Файл «{filename}» сохранён в базу знаний (ID: {res['id']})."
-                else:
-                    response_text = f"❌ Ошибка сохранения файла: {res.get('error')}"
-                await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}]")
-                await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
-                return {"response": response_text, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
-
             if not group:
                 await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}]")
                 await self.dialog.save_message(db, session_id, client_id, channel, "assistant", IDENTIFICATION_QUESTION)
@@ -152,28 +208,69 @@ class ChatService:
                     "session_id": session_id, "group": None, "requires_identification": True,
                 }
 
-            if group == "A":
-                await self.dialog.set_pending_document(
-                    db, client_id, {"text": extracted_text[:8000], "filename": filename}
-                )
-                response_text = (
-                    f"Получен файл «{filename}». Это официальный подписанный документ для базы знаний? "
-                    f"Ответьте «да» для подтверждения."
-                )
-                await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}]")
-                await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
-                return {
-                    "response": response_text, "model_used": "system",
-                    "session_id": session_id, "group": "A", "awaiting_verification": True,
-                }
+            wants_remember = self._is_remember_request(caption)
 
-            response_text = (
-                "База знаний пополняется только по официально подтверждённым документам "
-                "от партнёров группы А или поручениям основателя."
-            )
-            await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}]")
-            await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
-            return {"response": response_text, "model_used": "system", "session_id": session_id, "group": group}
+            # --- Явная просьба сохранить файл в базу знаний ---
+            if wants_remember:
+                if group == "FOUNDER":
+                    res = await self.founder.save_founder_knowledge(
+                        db, extracted_text, title=f"Файл от основателя: {filename}"
+                    )
+                    response_text = (
+                        f"✅ Файл «{filename}» сохранён в базу знаний (ID: {res['id']})."
+                        if res["success"] else f"❌ Ошибка сохранения файла: {res.get('error')}"
+                    )
+                    await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}] {caption}".strip())
+                    await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+                    return {"response": response_text, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+                if group == "A":
+                    await self.dialog.set_pending_document(
+                        db, client_id, {"text": extracted_text[:8000], "filename": filename}
+                    )
+                    response_text = (
+                        f"Получен файл «{filename}». Это официальный подписанный документ для базы знаний? "
+                        f"Ответьте «да» для подтверждения."
+                    )
+                    await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}] {caption}".strip())
+                    await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+                    return {
+                        "response": response_text, "model_used": "system",
+                        "session_id": session_id, "group": "A", "awaiting_verification": True,
+                    }
+
+                response_text = (
+                    "База знаний пополняется только по официально подтверждённым документам "
+                    "от партнёров группы А или поручениям основателя."
+                )
+                await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}] {caption}".strip())
+                await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
+                return {"response": response_text, "model_used": "system", "session_id": session_id, "group": group}
+
+            # --- Разовый анализ файла БЕЗ сохранения (п.3) ---
+            question = caption.strip() if caption and caption.strip() else "Проанализируй содержимое документа и дай краткую сводку по сути."
+            system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT.get(group, "")
+            messages = [
+                {"role": "system", "content": system_msg},
+                {"role": "system", "content": (
+                    f"Ниже — содержимое присланного документа «{filename}». Это разовый анализ, "
+                    f"документ НЕ сохраняется в базу знаний. Используй его только для ответа на текущий вопрос.\n\n"
+                    f"{extracted_text[:6000]}"
+                )},
+                {"role": "user", "content": question},
+            ]
+            try:
+                result = await self.llm.generate("openai", messages, temperature=0.3)
+                response_text = result["content"]
+                model_used = result.get("model", "openai")
+            except Exception as e:
+                logger.error(f"[Chat] Ошибка анализа файла: {e}")
+                response_text = "Не удалось проанализировать файл. Попробуйте ещё раз."
+                model_used = "error"
+
+            await self.dialog.save_message(db, session_id, client_id, channel, "user", f"[Файл: {filename}] {caption}".strip())
+            await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text, model_used=model_used)
+            return {"response": response_text, "model_used": model_used, "session_id": session_id, "group": group}
 
         except Exception as e:
             try:
@@ -186,13 +283,15 @@ class ChatService:
                 "model_used": "error", "session_id": session_id, "group": None,
             }
 
+    # ---------- Основной обработчик ----------
+
     async def _process(self, db: AsyncSession, client_id: str, channel: str, message: str) -> dict:
         start_time = time.time()
         session_id = f"{client_id}_{channel}"
 
         try:
             is_founder = self.founder.is_founder(client_id, channel)
-            
+
             client = await self.dialog._get_or_create_client(db, client_id, channel)
             group = await self.dialog.get_client_group(db, client_id)
             history = await self.dialog.get_history(db, session_id, limit=5)
@@ -228,6 +327,9 @@ class ChatService:
                     group = "B"
                     await self.dialog.set_client_group(db, client_id, group)
                     logger.info(f"[Chat] Клиент {client_id} → Группа B (по умолчанию)")
+
+            # --- Память имени/стиля контакта (п.5) ---
+            await self._maybe_learn_style(db, client_id, message)
 
             pending_doc = await self.dialog.get_pending_document(db, client_id)
             if pending_doc:
@@ -287,10 +389,10 @@ class ChatService:
                 contacts = {"info": message, "provided_at": time.time()}
                 await self.dialog.set_client_contacts(db, client_id, contacts)
                 await self.dialog.clear_pending_escalation(db, client_id)
-                
+
                 context_msgs = [h["content"] for h in history[-5:] if h["role"] == "user"]
                 context_summary = " | ".join(context_msgs)[:400] if context_msgs else "Запрос через чат-бот"
-                
+
                 from app.services.escalation_service import create_escalation, EscalationPriority
                 esc = await create_escalation(
                     db=db,
@@ -304,18 +406,18 @@ class ChatService:
                     priority=EscalationPriority(pending["priority"]),
                     group=pending["group"],
                 )
-                
+
                 response_text = (
-                    "Спасибо! Ваш запрос с контактными данными передан руководителю. "
-                    "Ожидайте связи в ближайшее время."
+                    "Спасибо! Ваш запрос принят, я всё рассчитаю и мы обязательно с вами свяжемся. "
+                    "Информация с вашими контактами передана руководителю."
                 )
-                
+
                 await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
                 await self.dialog.save_message(
                     db, session_id, client_id, channel, "assistant", response_text,
                     model_used="escalation", tokens_used=0
                 )
-                
+
                 return {
                     "response": response_text,
                     "model_used": "escalation",
@@ -327,12 +429,12 @@ class ChatService:
                 }
 
             from app.services.escalation_service import detect_escalation, create_escalation, EscalationPriority
-            
+
             needs_esc, reason, priority = detect_escalation(message, group or "B")
-            
+
             if needs_esc:
                 contacts = await self.dialog.get_client_contacts(db, client_id)
-                
+
                 if not contacts or not contacts.get("info"):
                     await self.dialog.set_pending_escalation(db, client_id, {
                         "reason": reason,
@@ -340,16 +442,16 @@ class ChatService:
                         "group": group
                     })
                     await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
-                    
+
                     response_text = (
                         "Ваш запрос требует внимания руководителя. "
-                        "Для оперативной связи, прошу направить ваши контакты: имя, телефон, email."
+                        "Оставьте, пожалуйста, ваши контакты для связи (имя, телефон или email)."
                     )
                     await self.dialog.save_message(
                         db, session_id, client_id, channel, "assistant", response_text,
                         model_used="system", tokens_used=0
                     )
-                    
+
                     return {
                         "response": response_text,
                         "model_used": "system",
@@ -358,10 +460,10 @@ class ChatService:
                         "group": group,
                         "awaiting_contacts": True,
                     }
-                
+
                 context_msgs = [h["content"] for h in history[-5:] if h["role"] == "user"]
                 context_summary = " | ".join(context_msgs)[:400] if context_msgs else "Запрос через чат-бот"
-                
+
                 esc = await create_escalation(
                     db=db,
                     session_id=session_id,
@@ -374,18 +476,18 @@ class ChatService:
                     priority=priority,
                     group=group,
                 )
-                
+
                 response_text = (
                     "Ваш запрос требует внимания руководителя. "
                     "Информация передана. Ожидайте ответа."
                 )
-                
+
                 await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
                 await self.dialog.save_message(
                     db, session_id, client_id, channel, "assistant", response_text,
                     model_used="escalation", tokens_used=0
                 )
-                
+
                 return {
                     "response": response_text,
                     "model_used": "escalation",
@@ -398,9 +500,36 @@ class ChatService:
 
             await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
             history = await self.dialog.get_history(db, session_id, limit=10)
+
+            client_style = await self.dialog.get_client_style(db, client_id)
+            name_hint = f"Обращайся к собеседнику по имени: {client_style['name']}. " if client_style.get("name") else ""
+
+            # --- Группа В: тёплое творческое общение (п.1) через DeepSeek ---
+            if group == "C":
+                system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT["C"] + name_hint
+                messages = [{"role": "system", "content": system_msg}]
+                for h in history:
+                    messages.append({"role": h["role"], "content": h["content"]})
+                messages.append({"role": "user", "content": message})
+
+                response_text = await self._generate_creative(messages)
+                model_used = "deepseek/deepseek-chat"
+
+                await self.dialog.save_message(
+                    db, session_id, client_id, channel, "assistant", response_text,
+                    model_used=model_used
+                )
+                return {
+                    "response": response_text,
+                    "model_used": model_used,
+                    "processing_time": round(time.time() - start_time, 3),
+                    "session_id": session_id,
+                    "group": group,
+                }
+
             knowledge_text = await self._fetch_knowledge(db, message, group)
 
-            system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT.get(group, "")
+            system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT.get(group, "") + name_hint
             system_msg += (
                 "\n\nВАЖНО: отвечай ТОЛЬКО на основе предоставленной базы знаний (см. ниже) и текущих правил. "
                 "Если информации нет в базе знаний — ответь 'Нет данных.' Не выдумывай факты, цены или обещания от имени компании."
@@ -445,6 +574,8 @@ class ChatService:
                 pass
             raise
 
+    # ---------- Обработка сообщений основателя ----------
+
     async def _process_founder(self, db, client_id, channel, message, history, start_time, session_id):
         try:
             cmd, arg = self.founder.parse_command(message)
@@ -461,7 +592,6 @@ class ChatService:
                     "group": "FOUNDER",
                 }
 
-            # --- Прямой детерминированный ответ на "кто я" (не зависит от LLM/RAG) ---
             if self._is_who_am_i(message):
                 response_text = (
                     "Вы — Павлов Вадим Геннадьевич, основатель и руководитель Bestconsulting. "
@@ -530,18 +660,70 @@ class ChatService:
 
             if cmd == "/доклад":
                 if not arg:
-                    return {"response": "Укажите тему. Пример: /доклад анализ эскалаций за месяц", "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
-                prompt = f"Сформируй аналитический доклад на тему: {arg}. Структура: 1. Введение 2. Данные 3. Выводы 4. Рекомендации. Кратко, по делу."
+                    return {"response": "Укажите тему. Пример: /доклад анализ эскалаций за месяц (excel/презентация — по ключевым словам в теме)", "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+                arg_lower = arg.lower()
+                if any(w in arg_lower for w in ["презентация", "powerpoint", "слайд", "pptx"]):
+                    fmt = "pptx"
+                elif any(w in arg_lower for w in ["excel", "таблиц", "сводн", "xlsx"]):
+                    fmt = "xlsx"
+                else:
+                    fmt = "pdf"
+
+                knowledge_text = await self._fetch_knowledge(db, arg, "FOUNDER")
+
+                if fmt == "xlsx":
+                    struct_instruction = (
+                        "Сформируй данные для сводной таблицы Excel по теме запроса. "
+                        "Ответь СТРОГО валидным JSON без markdown, без пояснений, в формате: "
+                        '{"headers": ["Колонка1", "Колонка2", ...], "rows": [["значение", "значение", ...], ...]}'
+                    )
+                elif fmt == "pptx":
+                    struct_instruction = (
+                        "Сформируй структуру презентации по теме запроса (5-8 слайдов). "
+                        "Ответь СТРОГО валидным JSON без markdown, без пояснений, в формате: "
+                        '{"slides": [{"title": "Заголовок слайда", "bullets": ["пункт 1", "пункт 2"]}, ...]}'
+                    )
+                else:
+                    struct_instruction = (
+                        "Сформируй структуру аналитического доклада по теме запроса. "
+                        "Ответь СТРОГО валидным JSON без markdown, без пояснений, в формате: "
+                        '{"sections": [{"heading": "Заголовок раздела", "text": "Текст раздела"}, ...]}'
+                    )
+
+                gen_messages = [{"role": "system", "content": struct_instruction}]
+                if knowledge_text:
+                    gen_messages.append({"role": "system", "content": f"База знаний по теме:\n{knowledge_text}"})
+                gen_messages.append({"role": "user", "content": arg})
+
                 try:
-                    result = await self.llm.generate("openai", [{"role": "user", "content": prompt}], temperature=0.3)
+                    result = await self.llm.generate("openai", gen_messages, temperature=0.3)
+                    raw = result["content"].strip()
+                    if raw.startswith("```"):
+                        raw = raw.strip("`")
+                        if raw.lower().startswith("json"):
+                            raw = raw[4:].strip()
+                    data = json.loads(raw)
+
+                    if fmt == "xlsx":
+                        file_bytes = build_xlsx(arg[:60], data.get("headers", []), data.get("rows", []))
+                        filename = "отчет.xlsx"
+                    elif fmt == "pptx":
+                        file_bytes = build_pptx(arg[:60], data.get("slides", []))
+                        filename = "презентация.pptx"
+                    else:
+                        file_bytes = build_pdf(arg[:60], data.get("sections", []))
+                        filename = "доклад.pdf"
+
                     return {
-                        "response": f"📄 Доклад «{arg}»:\n\n{result['content'][:1500]}\n\n(Сохраните текст — он не сохранён автоматически. Для автосохранения используйте /база [текст])",
+                        "response": f"📄 Готово: «{arg}». Файл прикреплён.",
                         "model_used": result.get("model", "openai"),
-                        "session_id": session_id,
-                        "group": "FOUNDER"
+                        "session_id": session_id, "group": "FOUNDER",
+                        "file_bytes": file_bytes, "filename": filename,
                     }
                 except Exception as e:
-                    return {"response": f"❌ Ошибка генерации доклада: {e}", "model_used": "error", "session_id": session_id, "group": "FOUNDER"}
+                    logger.error(f"[Chat] Ошибка генерации файла-доклада: {e}")
+                    return {"response": f"❌ Не удалось сформировать файл: {str(e)[:200]}", "model_used": "error", "session_id": session_id, "group": "FOUNDER"}
 
             if cmd == "/контакты":
                 try:
@@ -558,7 +740,7 @@ class ChatService:
                         extra = row.get("extra_data") or "{}"
                         try:
                             ed = json.loads(extra) if isinstance(extra, str) else extra
-                            name = ed.get("name", "—")
+                            name = ed.get("style", {}).get("name") or ed.get("name", "—")
                         except Exception:
                             name = "—"
                         lines.append(f"• {name} | {row['client_id']} | {row['channel']} | Группа: {row['client_group'] or '—'}")
@@ -575,16 +757,16 @@ class ChatService:
             if self._is_remember_request(message):
                 content = self._extract_remember_content(message)
                 res = await self.founder.save_founder_knowledge(db, content)
-                if res["success"]:
-                    response_text = f"✅ Сохранено в базу знаний (ID: {res['id']})."
-                else:
-                    response_text = f"❌ Ошибка сохранения: {res.get('error')}"
+                response_text = (
+                    f"✅ Сохранено в базу знаний (ID: {res['id']})."
+                    if res["success"] else f"❌ Ошибка сохранения: {res.get('error')}"
+                )
                 await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
                 await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
                 return {"response": response_text, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
 
             await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
-            
+
             if len(message) > 30 and any(w in message.lower() for w in ["нужно", "сделай", "собери", "подготовь", "напиши", "создай"]):
                 await self.founder.create_task(db, message[:100], message)
                 prefix = "✅ Зафиксировал как поручение. "
@@ -593,7 +775,7 @@ class ChatService:
 
             knowledge_text = await self._fetch_knowledge(db, message, "FOUNDER")
             system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT["FOUNDER"]
-            
+
             messages = [{"role": "system", "content": system_msg}]
             if knowledge_text:
                 messages.append({"role": "system", "content": knowledge_text})
@@ -611,7 +793,7 @@ class ChatService:
                 model_used = "error"
 
             await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text, model_used=model_used)
-            
+
             return {
                 "response": response_text,
                 "model_used": model_used,
@@ -634,14 +816,14 @@ class ChatService:
                 if h["role"] == "assistant":
                     last_bot = h["content"]
                     break
-            
+
             if last_bot and "подписанный документ" in last_bot and message.lower() in ["да", "yes", "подтверждаю", "верно"]:
                 prev_msg = None
                 for h in reversed(history):
                     if h["role"] == "user" and h["content"] != message:
                         prev_msg = h["content"]
                         break
-                
+
                 if prev_msg:
                     res = await self.founder.save_founder_knowledge(db, prev_msg, title="Документ от группы А (верифицирован)")
                     try:
@@ -653,7 +835,7 @@ class ChatService:
                         await db.commit()
                     except Exception:
                         await db.rollback()
-                    
+
                     return {
                         "response": f"✅ Документ верифицирован и сохранён (ID: {res['id']}). Версия: v1. Дата: {datetime.now().strftime('%Y-%m-%d')}.",
                         "model_used": "system",
@@ -669,7 +851,7 @@ class ChatService:
             )
             await self.dialog.save_message(db, session_id, client_id, channel, "user", message)
             await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
-            
+
             return {
                 "response": response_text,
                 "model_used": "system",
@@ -736,7 +918,7 @@ class ChatService:
             if not keywords:
                 return ""
 
-            keywords = keywords[:8]  # ограничение, чтобы не раздувать запрос
+            keywords = keywords[:8]
 
             conditions = []
             params = {}
