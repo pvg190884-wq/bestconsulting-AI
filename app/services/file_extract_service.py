@@ -5,7 +5,9 @@ from app.utils.logger import setup_logging
 
 logger = setup_logging()
 
-MAX_EXTRACT_CHARS = 15000  # ограничение, чтобы не раздувать контекст LLM/базу знаний
+MAX_EXTRACT_CHARS = 15000
+MIN_TEXT_LENGTH_FOR_VALID_PDF = 50  # если извлечено меньше — считаем PDF сканом
+MAX_OCR_PAGES = 5  # ограничение страниц для OCR через vision-модель (контроль стоимости)
 
 
 def _extract_txt(content: bytes) -> str:
@@ -17,7 +19,7 @@ def _extract_txt(content: bytes) -> str:
     return content.decode("utf-8", errors="ignore")
 
 
-def _extract_pdf(content: bytes) -> str:
+def _extract_pdf_text(content: bytes) -> str:
     import pdfplumber
     text_parts = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -65,7 +67,7 @@ async def _extract_image_via_vision(content: bytes, llm_service) -> str:
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "Извлеки и выведи ВЕСЬ читаемый текст с этого изображения дословно. Если текста нет — кратко опиши, что на изображении."},
+                {"type": "text", "text": "Извлеки и выведи ВЕСЬ читаемый текст с этого изображения дословно, максимально подробно, ничего не сокращай. Если текста нет — кратко опиши, что на изображении."},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
             ],
         }
@@ -78,6 +80,40 @@ async def _extract_image_via_vision(content: bytes, llm_service) -> str:
         return ""
 
 
+async def _extract_pdf_via_ocr(content: bytes, llm_service) -> str:
+    """Рендерит страницы PDF как изображения и распознаёт текст через vision-модель.
+    Используется как fallback для сканированных PDF без текстового слоя."""
+    try:
+        import pypdfium2 as pdfium
+    except Exception as e:
+        logger.error(f"[FileExtract] pypdfium2 недоступен: {e}")
+        return ""
+
+    if llm_service is None:
+        return ""
+
+    try:
+        pdf = pdfium.PdfDocument(io.BytesIO(content))
+        n_pages = min(len(pdf), MAX_OCR_PAGES)
+        parts = []
+        for i in range(n_pages):
+            page = pdf[i]
+            bitmap = page.render(scale=2.0)
+            pil_image = bitmap.to_pil()
+            buf = io.BytesIO()
+            pil_image.save(buf, format="JPEG", quality=85)
+            page_bytes = buf.getvalue()
+
+            page_text = await _extract_image_via_vision(page_bytes, llm_service)
+            if page_text:
+                parts.append(f"=== Страница {i + 1} ===\n{page_text}")
+
+        return "\n\n".join(parts)
+    except Exception as e:
+        logger.error(f"[FileExtract] Ошибка OCR-рендеринга PDF: {e}")
+        return ""
+
+
 async def extract_text(content: bytes, filename: str, llm_service=None) -> str:
     """Определяет тип файла по расширению и извлекает текст."""
     ext = (filename.rsplit(".", 1)[-1] if "." in filename else "").lower()
@@ -85,7 +121,12 @@ async def extract_text(content: bytes, filename: str, llm_service=None) -> str:
         if ext == "txt":
             text = _extract_txt(content)
         elif ext == "pdf":
-            text = _extract_pdf(content)
+            text = _extract_pdf_text(content)
+            if len(text.strip()) < MIN_TEXT_LENGTH_FOR_VALID_PDF:
+                logger.info(f"[FileExtract] PDF '{filename}' похож на скан (мало текста) — пробуем OCR")
+                ocr_text = await _extract_pdf_via_ocr(content, llm_service)
+                if ocr_text:
+                    text = ocr_text
         elif ext in ("xlsx", "xls"):
             text = _extract_xlsx(content)
         elif ext == "pptx":
