@@ -90,11 +90,13 @@ async def _extract_pdf_via_ocr(content: bytes, llm_service) -> str:
         return ""
 
     if llm_service is None:
+        logger.warning("[FileExtract] OCR невозможен: llm_service не передан")
         return ""
 
     try:
         pdf = pdfium.PdfDocument(io.BytesIO(content))
         n_pages = min(len(pdf), MAX_OCR_PAGES)
+        logger.info(f"[FileExtract] OCR: документ содержит {len(pdf)} стр., обрабатываем {n_pages}")
         parts = []
         for i in range(n_pages):
             page = pdf[i]
@@ -103,12 +105,16 @@ async def _extract_pdf_via_ocr(content: bytes, llm_service) -> str:
             buf = io.BytesIO()
             pil_image.save(buf, format="JPEG", quality=85)
             page_bytes = buf.getvalue()
+            logger.info(f"[FileExtract] OCR: страница {i + 1} отрендерена, {len(page_bytes)} байт")
 
             page_text = await _extract_image_via_vision(page_bytes, llm_service)
+            logger.info(f"[FileExtract] OCR: страница {i + 1} — распознано {len(page_text)} символов")
             if page_text:
                 parts.append(f"=== Страница {i + 1} ===\n{page_text}")
 
-        return "\n\n".join(parts)
+        result = "\n\n".join(parts)
+        logger.info(f"[FileExtract] OCR: итого распознано {len(result)} символов")
+        return result
     except Exception as e:
         logger.error(f"[FileExtract] Ошибка OCR-рендеринга PDF: {e}")
         return ""
@@ -122,11 +128,14 @@ async def extract_text(content: bytes, filename: str, llm_service=None) -> str:
             text = _extract_txt(content)
         elif ext == "pdf":
             text = _extract_pdf_text(content)
+            logger.info(f"[FileExtract] pdfplumber извлёк {len(text.strip())} символов из '{filename}'")
             if len(text.strip()) < MIN_TEXT_LENGTH_FOR_VALID_PDF:
                 logger.info(f"[FileExtract] PDF '{filename}' похож на скан (мало текста) — пробуем OCR")
                 ocr_text = await _extract_pdf_via_ocr(content, llm_service)
-                if ocr_text:
+                if ocr_text and len(ocr_text.strip()) > len(text.strip()):
                     text = ocr_text
+                else:
+                    logger.warning(f"[FileExtract] OCR не дал результата лучше исходного ({len(ocr_text.strip())} символов) — используем что есть")
         elif ext in ("xlsx", "xls"):
             text = _extract_xlsx(content)
         elif ext == "pptx":
