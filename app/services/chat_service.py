@@ -79,8 +79,8 @@ GROUP_CONTEXT = {
         "и НИКОГДА не применяется к самому основателю — он может сохранять любую информацию в базу знаний сразу по команде "
         "«запомни»/«сохрани», без запроса подтверждения о подписи документа. "
         "У тебя ЕСТЬ функции: сохранение информации в базу знаний, приём и анализ файлов (TXT, PDF, Excel, PowerPoint, JPG, PNG), "
-        "формирование докладов/презентаций/таблиц через команду /доклад. "
-        "Никогда не говори, что не можешь сохранять информацию или анализировать документы — эти функции у тебя есть. "
+        "формирование докладов/презентаций/таблиц через команду /доклад, генерация черновиков статей через /статья. "
+        "Никогда не говори, что не можешь сохранять информацию или анализировать документы/изображения — эти функции у тебя есть. "
         "Стиль: уважительный, оперативный, инициативный. Исполнять все поручения. Докладывать о результатах. "
     ),
 }
@@ -267,9 +267,10 @@ class ChatService:
             messages = [
                 {"role": "system", "content": system_msg},
                 {"role": "system", "content": (
-                    f"Ниже — ПОЛНОЕ содержимое присланного документа «{filename}». Это разовый анализ, "
-                    f"документ НЕ сохраняется в базу знаний автоматически. Отвечай на основе ВСЕГО текста ниже, "
-                    f"не сокращай и не обобщай пункты, если явно не попросили краткую сводку.\n\n"
+                    f"Тебе УЖЕ ПРЕДОСТАВЛЕНО содержимое присланного файла «{filename}» — оно распознано и приведено ниже целиком. "
+                    f"НИКОГДА не говори, что не можешь просмотреть/проанализировать изображение или документ — ты его уже видишь в виде текста ниже. "
+                    f"Это разовый анализ, документ НЕ сохраняется в базу знаний автоматически. "
+                    f"Отвечай на основе ВСЕГО текста ниже, не сокращай и не обобщай пункты, если явно не попросили краткую сводку.\n\n"
                     f"{extracted_text[:8000]}"
                 )},
                 {"role": "user", "content": question},
@@ -546,7 +547,6 @@ class ChatService:
                     "group": group,
                 }
 
-            # Если недавно был прислан документ и текущий вопрос ссылается на него — подмешиваем полный текст
             document_context = ""
             if self._references_document(message):
                 last_doc = await self.dialog.get_last_document(db, client_id)
@@ -754,11 +754,87 @@ class ChatService:
                         "response": f"📄 Готово: «{arg}». Файл прикреплён.",
                         "model_used": result.get("model", "openai"),
                         "session_id": session_id, "group": "FOUNDER",
-                        "file_bytes": file_bytes, "filename": filename,
+                        "attachments": [{"bytes": file_bytes, "filename": filename}],
                     }
                 except Exception as e:
                     logger.error(f"[Chat] Ошибка генерации файла-доклада: {e}")
                     return {"response": f"❌ Не удалось сформировать файл: {str(e)[:200]}", "model_used": "error", "session_id": session_id, "group": "FOUNDER"}
+
+            if cmd == "/статья":
+                if not arg:
+                    return {"response": "Укажите тему или нишу. Пример: /статья психология отношений в браке", "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+                struct_instruction = (
+                    "Ты — редактор канала Bestconsulting на Дзен. Напиши статью по указанной теме/нише. "
+                    "Требования: заголовок кликабельный, но не желтушный; объём 600-1000 слов; "
+                    "структура — вступление-крючок, 3-4 смысловых блока с подзаголовками, заключение с призывом подписаться; "
+                    "живой разговорный стиль, конкретные примеры, риторические вопросы к читателю; "
+                    "текст не должен читаться как очевидный, шаблонный ИИ-текст. "
+                    "Ответь СТРОГО валидным JSON без markdown и пояснений, в формате: "
+                    '{"title_options": ["вариант1", "вариант2", "вариант3"], "article_text": "полный текст статьи", '
+                    '"description": "краткое описание для превью, 150-200 символов", "tags": ["тег1", "тег2", "тег3"], '
+                    '"image_prompt": "короткое описание обложки на английском для генерации изображения"}'
+                )
+
+                gen_messages = [
+                    {"role": "system", "content": struct_instruction},
+                    {"role": "user", "content": arg},
+                ]
+
+                try:
+                    result = await self.llm.generate("openai", gen_messages, temperature=0.7)
+                    raw = result["content"].strip()
+                    if raw.startswith("```"):
+                        raw = raw.strip("`")
+                        if raw.lower().startswith("json"):
+                            raw = raw[4:].strip()
+                    data = json.loads(raw)
+
+                    titles = data.get("title_options", [])
+                    article_text = data.get("article_text", "")
+                    description = data.get("description", "")
+                    tags = data.get("tags", [])
+                    image_prompt = data.get("image_prompt", arg)
+
+                    txt_content = (
+                        "=== BESTCONSULTING — Черновик статьи для Дзен ===\n\n"
+                        "ВАРИАНТЫ ЗАГОЛОВКА:\n"
+                        + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(titles)) + "\n\n"
+                        f"ОПИСАНИЕ (для превью):\n{description}\n\n"
+                        f"ТЕГИ:\n{', '.join(tags)}\n\n"
+                        "======================\n"
+                        "ТЕКСТ СТАТЬИ:\n"
+                        "======================\n\n"
+                        f"{article_text}"
+                    )
+
+                    attachments = [{"bytes": txt_content.encode("utf-8"), "filename": "статья_дзен.txt"}]
+
+                    media_res = await self.founder.generate_media(image_prompt, width=1200, height=675)
+                    if media_res.get("success"):
+                        try:
+                            import httpx
+                            async with httpx.AsyncClient(timeout=30.0) as client:
+                                img_r = await client.get(media_res["url"])
+                                if img_r.status_code == 200:
+                                    attachments.append({"bytes": img_r.content, "filename": "обложка.jpg"})
+                        except Exception as e:
+                            logger.warning(f"[Chat] Не удалось скачать обложку: {e}")
+
+                    preview_title = titles[0] if titles else arg
+                    return {
+                        "response": (
+                            f"📝 Черновик статьи готов: «{preview_title}»\n\n"
+                            f"Файл с текстом статьи, заголовками и тегами + обложка — прикреплены. "
+                            f"Скопируйте текст в Дзен-студию и опубликуйте вручную."
+                        ),
+                        "model_used": result.get("model", "openai"),
+                        "session_id": session_id, "group": "FOUNDER",
+                        "attachments": attachments,
+                    }
+                except Exception as e:
+                    logger.error(f"[Chat] Ошибка генерации статьи: {e}")
+                    return {"response": f"❌ Не удалось сформировать статью: {str(e)[:200]}", "model_used": "error", "session_id": session_id, "group": "FOUNDER"}
 
             if cmd == "/контакты":
                 try:
