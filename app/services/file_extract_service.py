@@ -74,7 +74,9 @@ async def _extract_image_via_vision(content: bytes, llm_service) -> str:
     ]
     try:
         result = await llm_service.generate("openai", messages, temperature=0.0)
-        return result.get("content", "")
+        extracted = result.get("content", "")
+        logger.info(f"[FileExtract] Vision-извлечение: получено {len(extracted)} символов")
+        return extracted
     except Exception as e:
         logger.error(f"[FileExtract] Ошибка vision-извлечения: {e}")
         return ""
