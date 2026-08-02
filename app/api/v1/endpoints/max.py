@@ -103,13 +103,22 @@ async def _download_max_attachment(url: str) -> bytes:
         return r.content
 
 
-async def _deliver_result(chat_id, result: dict):
-    response_text = result.get("response", "Ошибка обработки")
-    await send_max_message(chat_id, response_text)
-    file_bytes = result.get("file_bytes")
-    filename = result.get("filename")
-    if file_bytes and filename:
-        await send_max_document(chat_id, file_bytes, filename)
+async def _fetch_message_by_id(message_id: str) -> dict | None:
+    """Получает сообщение по ID — нужно, когда пользователь отвечает (reply)
+    на ранее отправленный файл: MAX кладёт в текущее сообщение только
+    ссылку {type: 'reply', mid: ...}, без самого содержимого."""
+    headers = {"Authorization": settings.MAX_API_TOKEN}
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            r = await client.get(f"{MAX_API_HOST}/messages/{message_id}", headers=headers)
+            if r.status_code == 200:
+                return r.json()
+            else:
+                logger.warning(f"[MAX] Не удалось получить сообщение {message_id}: {r.status_code} {r.text[:200]}")
+                return None
+    except Exception as e:
+        logger.error(f"[MAX] Ошибка получения сообщения по ID: {e}")
+        return None
 
 
 @router.post("/webhook")
@@ -144,6 +153,20 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         message_text = (body.get("text") or data.get("text") or data.get("body") or "").strip()
         attachments = body.get("attachments") or []
 
+        # --- Поддержка "Reply" на ранее отправленный файл ---
+        # MAX кладёт в текущее сообщение только ссылку {type: 'reply', mid: '...'},
+        # без содержимого исходного сообщения — нужно подтянуть его отдельным запросом
+        if not attachments:
+            link = message.get("link", {}) or {}
+            if link.get("type") == "reply" and link.get("mid"):
+                original = await _fetch_message_by_id(link["mid"])
+                if original:
+                    original_body = original.get("body", {}) or {}
+                    original_attachments = original_body.get("attachments") or []
+                    if original_attachments:
+                        attachments = original_attachments
+                        # текст текущего сообщения (reply) играет роль подписи к файлу
+
         service = _get_chat_service()
 
         if attachments:
@@ -161,7 +184,12 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         await send_max_message(chat_id, "Не удалось извлечь текст из файла. Поддерживаются: TXT, PDF, Excel, PowerPoint, JPG, PNG.")
                         return {"ok": True}
                     result = await service.process_file(db, sender_id, "max", extracted, filename, caption=message_text)
-                    await _deliver_result(chat_id, result)
+                    response_text = result.get("response", "Ошибка обработки")
+                    await send_max_message(chat_id, response_text)
+                    file_bytes = result.get("file_bytes")
+                    gen_filename = result.get("filename")
+                    if file_bytes and gen_filename:
+                        await send_max_document(chat_id, file_bytes, gen_filename)
                 except Exception as e:
                     logger.error(f"[MAX] Ошибка обработки вложения: {e}")
                     await send_max_message(chat_id, "Ошибка при обработке файла. Попробуйте ещё раз.")
@@ -175,7 +203,13 @@ async def max_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         logger.info(f"[MAX] Входящее от {sender_id} (chat {chat_id}): {message_text[:100]}...")
 
         result = await service.process_message(db, sender_id, "max", message_text)
-        await _deliver_result(chat_id, result)
+
+        if isinstance(result, dict) and result.get("response"):
+            await send_max_message(chat_id, result["response"])
+            file_bytes = result.get("file_bytes")
+            gen_filename = result.get("filename")
+            if file_bytes and gen_filename:
+                await send_max_document(chat_id, file_bytes, gen_filename)
 
         return {"ok": True}
     except Exception as e:
