@@ -30,8 +30,13 @@ async def _download_telegram_file(file_id: str) -> tuple[bytes, str]:
 
 
 async def _deliver_result(chat_id: int, result: dict):
+    """Отправляет текст и, если есть, один или несколько сгенерированных файлов."""
     response_text = result.get("response", "Ошибка обработки")
     await send_message(chat_id, response_text)
+
+    for att in result.get("attachments", []):
+        await send_document(chat_id, att["bytes"], att["filename"])
+
     file_bytes = result.get("file_bytes")
     filename = result.get("filename")
     if file_bytes and filename:
@@ -48,6 +53,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
     msg = data["message"]
     chat = msg.get("chat", {})
     chat_id = chat.get("id")
+    logger.info(f"[TG] Входящее сообщение из чата: id={chat_id}, type={chat.get('type')}, title={chat.get('title')}")
     text = msg.get("text", "")
 
     if not chat_id:
@@ -68,14 +74,12 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
     photos = msg.get("photo")
     caption = msg.get("caption", "")
 
-    # Поддержка "Reply" на ранее отправленный файл — Telegram кладёт исходное
-    # вложение в reply_to_message, а не в текущее сообщение
     reply_msg = msg.get("reply_to_message") or {}
     if not document and not photos:
         document = reply_msg.get("document")
         photos = reply_msg.get("photo")
         if (document or photos) and not caption:
-            caption = text  # текст текущего сообщения играет роль подписи к файлу из reply
+            caption = text
 
     file_id = None
     doc_filename = None
