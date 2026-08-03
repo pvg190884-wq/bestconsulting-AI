@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.services.llm_service import LLMService
 from app.services.founder_service import FounderService
 from app.services.document_generator import build_xlsx, build_pptx, build_pdf
+from app.services import dzen_service
 from app.memory.dialog_manager import DialogManager
 from app.utils.logger import setup_logging
 
@@ -79,7 +80,8 @@ GROUP_CONTEXT = {
         "и НИКОГДА не применяется к самому основателю — он может сохранять любую информацию в базу знаний сразу по команде "
         "«запомни»/«сохрани», без запроса подтверждения о подписи документа. "
         "У тебя ЕСТЬ функции: сохранение информации в базу знаний, приём и анализ файлов (TXT, PDF, Excel, PowerPoint, JPG, PNG), "
-        "формирование докладов/презентаций/таблиц через команду /доклад, генерация черновиков статей через /статья. "
+        "формирование докладов/презентаций/таблиц через команду /доклад, генерация черновиков статей через /статья, "
+        "автоматизированная серия статей для Дзен через /дзен_старт /дзен_стоп /дзен_статус. "
         "Никогда не говори, что не можешь сохранять информацию или анализировать документы/изображения — эти функции у тебя есть. "
         "Стиль: уважительный, оперативный, инициативный. Исполнять все поручения. Докладывать о результатах. "
     ),
@@ -220,7 +222,6 @@ class ChatService:
                     "session_id": session_id, "group": None, "requires_identification": True,
                 }
 
-            # Кэшируем полный текст документа — понадобится для follow-up вопросов и remember
             await self.dialog.set_last_document(db, client_id, {"text": extracted_text, "filename": filename})
 
             wants_remember = self._is_remember_request(caption)
@@ -261,7 +262,6 @@ class ChatService:
                 await self.dialog.save_message(db, session_id, client_id, channel, "assistant", response_text)
                 return {"response": response_text, "model_used": "system", "session_id": session_id, "group": group}
 
-            # --- Разовый анализ файла БЕЗ сохранения ---
             question = caption.strip() if caption and caption.strip() else "Проанализируй содержимое документа детально: перечисли ВСЕ пункты, даты и названия без сокращений."
             system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT.get(group, "")
             messages = [
@@ -765,10 +765,11 @@ class ChatService:
                     return {"response": "Укажите тему или нишу. Пример: /статья психология отношений в браке", "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
 
                 struct_instruction = (
-                    "Ты — редактор канала Bestconsulting на Дзен. Напиши статью по указанной теме/нише. "
-                    "Требования: заголовок кликабельный, но не желтушный; объём 600-1000 слов; "
+                    "Ты — редактор канала Bestconsulting на Дзен. Текущий год — 2026, не упоминай 2025 год как актуальный. "
+                    "Напиши статью по указанной теме/нише. "
+                    "Требования: заголовок кликабельный, но не желтушный, не длиннее 128 символов; объём 600-1000 слов; "
                     "структура — вступление-крючок, 3-4 смысловых блока с подзаголовками, заключение с призывом подписаться; "
-                    "живой разговорный стиль, конкретные примеры, риторические вопросы к читателю; "
+                    "живой разговорный стиль, конкретные примеры, риторические вопросы к читателю; без ссылок внутри текста; "
                     "текст не должен читаться как очевидный, шаблонный ИИ-текст. "
                     "Ответь СТРОГО валидным JSON без markdown и пояснений, в формате: "
                     '{"title_options": ["вариант1", "вариант2", "вариант3"], "article_text": "полный текст статьи", '
@@ -835,6 +836,18 @@ class ChatService:
                 except Exception as e:
                     logger.error(f"[Chat] Ошибка генерации статьи: {e}")
                     return {"response": f"❌ Не удалось сформировать статью: {str(e)[:200]}", "model_used": "error", "session_id": session_id, "group": "FOUNDER"}
+
+            if cmd == "/дзен_старт":
+                msg = await dzen_service.start_series(db)
+                return {"response": msg, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+            if cmd == "/дзен_стоп":
+                msg = await dzen_service.stop_series(db)
+                return {"response": msg, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+            if cmd == "/дзен_статус":
+                msg = await dzen_service.status_series(db)
+                return {"response": msg, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
 
             if cmd == "/контакты":
                 try:
