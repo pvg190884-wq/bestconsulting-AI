@@ -14,6 +14,17 @@ logger = setup_logging()
 
 TELEGRAM_API = "https://api.telegram.org/bot"
 
+# Дедупликация повторных webhook-доставок от Telegram (защита от дублей при таймауте)
+_processed_update_ids: set[int] = set()
+_MAX_TRACKED_UPDATES = 2000
+
+# Группы/каналы только для публикации постов планировщиком — бот НЕ отвечает
+# на входящие сообщения в этих чатах (нет базы знаний под их аудиторию).
+# Публикация постов работает независимо — через отдельный прямой вызов send_message().
+BROADCAST_ONLY_CHAT_IDS = {
+    -1003921754469,  # DubaiDreamBestJobs
+}
+
 
 async def _download_telegram_file(file_id: str) -> tuple[bytes, str]:
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -47,17 +58,34 @@ async def _deliver_result(chat_id: int, result: dict):
 async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     data = await request.json()
 
+    # --- Дедупликация: игнорируем повторную доставку того же update_id ---
+    update_id = data.get("update_id")
+    if update_id is not None:
+        if update_id in _processed_update_ids:
+            logger.info(f"[TG] Повторная доставка update_id={update_id} — игнорируем")
+            return {"ok": True}
+        _processed_update_ids.add(update_id)
+        if len(_processed_update_ids) > _MAX_TRACKED_UPDATES:
+            _processed_update_ids.clear()
+
     if "message" not in data:
         return {"ok": True}
 
     msg = data["message"]
     chat = msg.get("chat", {})
     chat_id = chat.get("id")
-    logger.info(f"[TG] Входящее сообщение из чата: id={chat_id}, type={chat.get('type')}, title={chat.get('title')}")
-    text = msg.get("text", "")
+    chat_type = chat.get("type")
+    logger.info(f"[TG] Входящее сообщение из чата: id={chat_id}, type={chat_type}, title={chat.get('title')}")
 
     if not chat_id:
         return {"ok": True}
+
+    # --- Publish-only чаты: бот только публикует туда посты, но не отвечает на сообщения ---
+    if chat_id in BROADCAST_ONLY_CHAT_IDS:
+        logger.info(f"[TG] Чат {chat_id} в списке broadcast-only — не отвечаем")
+        return {"ok": True}
+
+    text = msg.get("text", "")
 
     if text.startswith("/"):
         if text == "/start":
