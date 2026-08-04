@@ -11,6 +11,7 @@ from app.services.llm_service import LLMService
 from app.services.founder_service import FounderService
 from app.services.document_generator import build_xlsx, build_pptx, build_pdf
 from app.services import dzen_service
+from app.services import dubai_jobs_service
 from app.memory.dialog_manager import DialogManager
 from app.utils.logger import setup_logging
 
@@ -81,7 +82,8 @@ GROUP_CONTEXT = {
         "«запомни»/«сохрани», без запроса подтверждения о подписи документа. "
         "У тебя ЕСТЬ функции: сохранение информации в базу знаний, приём и анализ файлов (TXT, PDF, Excel, PowerPoint, JPG, PNG), "
         "формирование докладов/презентаций/таблиц через команду /доклад, генерация черновиков статей через /статья, "
-        "автоматизированная серия статей для Дзен через /дзен_старт /дзен_стоп /дзен_статус. "
+        "автоматизированная серия статей для Дзен через /дзен_старт /дзен_стоп /дзен_статус, "
+        "ежедневные посты про рынок труда Дубая через /дубай_старт /дубай_стоп /дубай_статус /дубай_тест. "
         "Никогда не говори, что не можешь сохранять информацию или анализировать документы/изображения — эти функции у тебя есть. "
         "Стиль: уважительный, оперативный, инициативный. Исполнять все поручения. Докладывать о результатах. "
     ),
@@ -847,6 +849,22 @@ class ChatService:
 
             if cmd == "/дзен_статус":
                 msg = await dzen_service.status_series(db)
+                return {"response": msg, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+            if cmd == "/дубай_старт":
+                msg = await dubai_jobs_service.start_daily_posts(db)
+                return {"response": msg, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+            if cmd == "/дубай_стоп":
+                msg = await dubai_jobs_service.stop_daily_posts(db)
+                return {"response": msg, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+            if cmd == "/дубай_статус":
+                msg = await dubai_jobs_service.status_daily_posts(db)
+                return {"response": msg, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
+
+            if cmd == "/дубай_тест":
+                msg = await dubai_jobs_service.test_post_now(db)
                 return {"response": msg, "model_used": "system", "session_id": session_id, "group": "FOUNDER"}
 
             if cmd == "/контакты":
