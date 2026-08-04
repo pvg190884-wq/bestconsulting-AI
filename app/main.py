@@ -4,11 +4,9 @@
 import time
 import os
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
 from app.config import settings
 from app.utils.logger import setup_logging
 from app.core.exceptions import BestConsultingException
@@ -19,12 +17,23 @@ from app.db.migrations import run_migrations
 logger = setup_logging()
 
 
+async def _start_background_schedulers():
+    """Регистрирует cron-задачи (Дзен, Дубай) при каждом старте приложения —
+    иначе расписание теряется при каждом передеплое."""
+    try:
+        from app.services import dzen_service, dubai_jobs_service
+        dzen_service._ensure_scheduler_started()
+        dubai_jobs_service._ensure_scheduled(dzen_service._scheduler)
+        logger.info("✅ Фоновые планировщики (Дзен, Дубай) зарегистрированы")
+    except Exception as e:
+        logger.error(f"❌ Ошибка регистрации планировщиков: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 CANARY-0001 v2.2 запущен")
     logger.info(f"Окружение: {settings.APP_ENV}")
     logger.info(f"Оркестратор: {settings.OPENAI_MODEL} (OpenRouter)")
-
     try:
         await init_db()
         await run_migrations()
@@ -47,6 +56,9 @@ async def lifespan(app: FastAPI):
         logger.info(f"📋 Настрой MAX webhook через @MasterBot:")
         logger.info(f"   URL: https://{railway_url}/api/v1/max/webhook")
 
+    # Фоновые планировщики — регистрируются при каждом старте, переживают передеплой
+    await _start_background_schedulers()
+
     yield
     logger.info("🛑 BestConsulting AI Core остановлен")
 
@@ -59,7 +71,6 @@ app = FastAPI(
     docs_url="/docs" if settings.APP_ENV != "production" else None,
     redoc_url="/redoc" if settings.APP_ENV != "production" else None,
 )
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
