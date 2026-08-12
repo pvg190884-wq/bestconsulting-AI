@@ -96,7 +96,7 @@ class LLMService:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://bestconsulting.ru",
-            "X-Title": "BestConsulting AI Core — Web Search",
+            "X-Title": "BestConsulting AI Core - Web Search",
         }
 
         payload = {
