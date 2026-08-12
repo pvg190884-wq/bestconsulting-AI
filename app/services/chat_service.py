@@ -64,13 +64,50 @@ IDENTIFICATION_QUESTION = (
     "Уточните, из какой вы организации и представьтесь?"
 )
 
+# ---------- Инструмент веб-поиска (function calling) ----------
+# Модель сама решает, вызывать ли его, когда для честного и полного ответа
+# не хватает данных из базы знаний / контекста диалога.
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Поиск актуальной информации в открытых источниках интернета: новости, текущие события, "
+            "курсы, цены, статусы компаний или людей, законы и всё остальное, чего нет и не может быть "
+            "в базе знаний компании. Используй, когда для полного и честного ответа не хватает данных "
+            "из базы знаний или требуется свежая информация из интернета. Не используй для вопросов "
+            "по услугам, тарифам и внутренним данным компании — на них отвечай из базы знаний."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Поисковый запрос — суть того, что нужно найти в интернете",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 GROUP_CONTEXT = {
-    "A": "Клиент Группы А (Корпоративный: Газпром инвест, Газстройпром, Системы управления, Ленгазспецстрой, СтройТрансНефтегаз). Стиль: строгий деловой. НЕ предлагать услуги Bestconsulting. НЕ брать деньги. ",
-    "B": "Клиент Группы Б (Клиент Bestconsulting). Стиль: экспертный/консультационный. Услуги по прайсу. ",
+    "A": (
+        "Клиент Группы А (Корпоративный: Газпром инвест, Газстройпром, Системы управления, "
+        "Ленгазспецстрой, СтройТрансНефтегаз). Стиль: строгий деловой. НЕ предлагать услуги "
+        "Bestconsulting. НЕ брать деньги. Если нужна актуальная информация из интернета — "
+        "используй инструмент web_search. "
+    ),
+    "B": (
+        "Клиент Группы Б (Клиент Bestconsulting). Стиль: экспертный/консультационный. Услуги по прайсу. "
+        "Если нужна актуальная информация из интернета — используй инструмент web_search. "
+    ),
     "C": (
         "Клиент Группы В (Личные контакты: семья, друзья). Стиль: тёплый, живой, неформальный личный. "
         "НИКАКИХ продаж, цен и услуг. Можно свободно поддерживать разговор на любые темы "
         "(погода, настроение, общие темы) — это нормальное живое общение, а не консультация. "
+        "Если собеседник спрашивает про актуальные новости, события или факты, которых ты не "
+        "знаешь наверняка — используй инструмент web_search вместо отказа или выдумывания. "
     ),
     "FOUNDER": (
         "Ты общаешься с ОСНОВАТЕЛЕМ и руководителем компании Bestconsulting — Павлов Вадим Геннадьевич. "
@@ -83,8 +120,9 @@ GROUP_CONTEXT = {
         "У тебя ЕСТЬ функции: сохранение информации в базу знаний, приём и анализ файлов (TXT, PDF, Excel, PowerPoint, JPG, PNG), "
         "формирование докладов/презентаций/таблиц через команду /доклад, генерация черновиков статей через /статья, "
         "автоматизированная серия статей для Дзен через /дзен_старт /дзен_стоп /дзен_статус, "
-        "ежедневные посты про рынок труда Дубая через /дубай_старт /дубай_стоп /дубай_статус /дубай_тест. "
-        "Никогда не говори, что не можешь сохранять информацию или анализировать документы/изображения — эти функции у тебя есть. "
+        "ежедневные посты про рынок труда Дубая через /дубай_старт /дубай_стоп /дубай_статус /дубай_тест, "
+        "и поиск актуальной информации в открытых источниках интернета через инструмент web_search "
+        "(вызывай его сам, когда для ответа нужны свежие данные из сети, не отказывайся под предлогом отсутствия доступа к интернету). "
         "Стиль: уважительный, оперативный, инициативный. Исполнять все поручения. Докладывать о результатах. "
     ),
 }
@@ -150,27 +188,121 @@ class ChatService:
             except Exception as e:
                 logger.warning(f"[Chat] Не удалось сохранить имя: {e}")
 
+    # ---------- Function calling: генерация с возможностью веб-поиска ----------
+
+    async def _generate_with_search(
+        self, messages: list[dict], provider: str = "openai", temperature: float = 0.2
+    ) -> dict:
+        """
+        Вызывает LLM с инструментом web_search. Если модель решает, что ей нужны
+        актуальные данные из интернета — выполняет поиск через OpenRouter (:online)
+        и повторно обращается к модели с результатами поиска для финального ответа.
+        Возвращает dict в том же формате, что и LLMService.generate().
+        """
+        result = await self.llm.generate(
+            provider, messages, temperature=temperature,
+            tools=[WEB_SEARCH_TOOL], tool_choice="auto",
+        )
+
+        tool_calls = result.get("tool_calls")
+        if not tool_calls:
+            return result
+
+        logger.info(f"[Chat] Модель запросила web_search ({len(tool_calls)} вызов(ов))")
+
+        assistant_msg = {"role": "assistant", "content": result.get("content") or "", "tool_calls": tool_calls}
+        followup_messages = messages + [assistant_msg]
+
+        for tc in tool_calls:
+            fn = tc.get("function", {}) or {}
+            name = fn.get("name")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                args = {}
+
+            if name == "web_search":
+                query = args.get("query", "")
+                search_result = await self.llm.web_search(query, provider=provider)
+            else:
+                search_result = "Инструмент не поддерживается."
+
+            followup_messages.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id"),
+                "content": search_result,
+            })
+
+        try:
+            final_result = await self.llm.generate(provider, followup_messages, temperature=temperature)
+        except Exception as e:
+            logger.error(f"[Chat] Ошибка финального ответа после веб-поиска: {e}")
+            raise
+
+        return final_result
+
     async def _generate_creative(self, messages: list[dict]) -> str:
+        """Генерация для группы В (личное общение) — DeepSeek с fallback на openai,
+        обе ветки умеют самостоятельно запрашивать веб-поиск."""
         api_key = getattr(self.llm, "api_key", None)
         base_url = getattr(self.llm, "base_url", None) or "https://openrouter.ai/api/v1"
 
         if api_key:
             try:
                 import httpx
+                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     r = await client.post(
                         f"{base_url}/chat/completions",
-                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        json={"model": "deepseek/deepseek-chat", "messages": messages, "temperature": 0.8},
+                        headers=headers,
+                        json={
+                            "model": "deepseek/deepseek-chat",
+                            "messages": messages,
+                            "temperature": 0.8,
+                            "tools": [WEB_SEARCH_TOOL],
+                            "tool_choice": "auto",
+                        },
                     )
                     r.raise_for_status()
                     data = r.json()
-                    return data["choices"][0]["message"]["content"]
+                    choice_msg = data["choices"][0]["message"]
+                    tool_calls = choice_msg.get("tool_calls")
+
+                    if not tool_calls:
+                        return choice_msg.get("content") or ""
+
+                    logger.info(f"[Chat] Creative (DeepSeek) запросила web_search ({len(tool_calls)} вызов(ов))")
+                    followup_messages = messages + [{
+                        "role": "assistant",
+                        "content": choice_msg.get("content") or "",
+                        "tool_calls": tool_calls,
+                    }]
+                    for tc in tool_calls:
+                        fn = tc.get("function", {}) or {}
+                        try:
+                            args = json.loads(fn.get("arguments") or "{}")
+                        except Exception:
+                            args = {}
+                        query = args.get("query", "")
+                        search_result = await self.llm.web_search(query, provider="deepseek")
+                        followup_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id"),
+                            "content": search_result,
+                        })
+
+                    r2 = await client.post(
+                        f"{base_url}/chat/completions",
+                        headers=headers,
+                        json={"model": "deepseek/deepseek-chat", "messages": followup_messages, "temperature": 0.8},
+                    )
+                    r2.raise_for_status()
+                    return r2.json()["choices"][0]["message"]["content"]
             except Exception as e:
                 logger.warning(f"[Chat] Creative (DeepSeek) недоступен, fallback: {e}")
 
         try:
-            result = await self.llm.generate("openai", messages, temperature=0.8)
+            result = await self._generate_with_search(messages, provider="openai", temperature=0.8)
             return result.get("content", "")
         except Exception:
             return "Извините, не могу сейчас ответить, но обязательно вернусь к разговору чуть позже."
@@ -562,8 +694,11 @@ class ChatService:
 
             system_msg = self.system_prompt + "\n\n" + GROUP_CONTEXT.get(group, "") + name_hint
             system_msg += (
-                "\n\nВАЖНО: отвечай ТОЛЬКО на основе предоставленной базы знаний (см. ниже) и текущих правил. "
-                "Если информации нет в базе знаний — ответь 'Нет данных.' Не выдумывай факты, цены или обещания от имени компании."
+                "\n\nВАЖНО: сначала отвечай на основе предоставленной базы знаний (см. ниже) и текущих правил. "
+                "Если в базе знаний ответа нет, но вопрос требует АКТУАЛЬНОЙ информации из интернета "
+                "(новости, текущие события, курсы, цены, статусы и т.п.) — используй инструмент web_search, "
+                "а не выдумывай факты. Если вопрос не связан с интернетом и данных просто нет в базе — "
+                "ответь 'Нет данных.' Никогда не выдумывай факты, цены или обещания от имени компании."
             )
 
             messages = [{"role": "system", "content": system_msg}]
@@ -576,7 +711,7 @@ class ChatService:
             messages.append({"role": "user", "content": message})
 
             try:
-                result = await self.llm.generate("openai", messages, temperature=0.2)
+                result = await self._generate_with_search(messages, provider="openai", temperature=0.2)
                 response_text = result["content"]
                 model_used = result.get("model", "openai")
                 tokens = result.get("tokens_prompt", 0) + result.get("tokens_completion", 0)
@@ -945,7 +1080,7 @@ class ChatService:
             messages.append({"role": "user", "content": message})
 
             try:
-                result = await self.llm.generate("openai", messages, temperature=0.3)
+                result = await self._generate_with_search(messages, provider="openai", temperature=0.3)
                 response_text = prefix + result["content"]
                 model_used = result.get("model", "openai")
             except Exception as e:
